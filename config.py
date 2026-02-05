@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 # Fetcher API
-STORE_NODE = ""
+STORE_NODE = "http://distributor:11080"
 ENDPOINTS = {
     "-d" : "download_pkg",
     "-i" : "pkg_by_name",
