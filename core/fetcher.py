@@ -2,8 +2,10 @@ import requests
 from typing import Any
 from urllib.parse import urljoin
 
+from config import *
+
 class Fetcher:
-    def __init__(self, store_node_url, headers=None):
+    def __init__(self, store_node_url=STORE_NODE, headers=None):
         self.base_url = store_node_url
         self.session = requests.Session()
         

@@ -1,7 +1,5 @@
-from core.fetcher import Fetcher
-from core.store import Store
-
-STORE_NODE = ""
+from core import *
+from config import *
 
 def main():
     fetcher = Fetcher(STORE_NODE)
@@ -13,5 +11,6 @@ def main():
         info = fetcher.get(endpoint)
 
         print(store.update(info) if isinstance(info, dict) else info)
+
 if __name__ == "__main__":
     main()

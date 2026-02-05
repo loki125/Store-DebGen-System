@@ -1,54 +1,59 @@
 import subprocess
-import os
 
 from generation import GenerationBuilder, View
+from config import *
 
 class SandBox:
     def __init__(self, target : GenerationBuilder):
         self.target = target
-        self.view : View = target.views
-
-        # track mounts to clean them up later
+        self.view : View = target.views  # target.view has merged, lower, upper, work
         self.mounts = []
 
-    def mount_overlay(self):
-        """Mounts the OverlayFS layers into the merged directory."""
-        opts = f"lowerdir={self.view.lower},upperdir={self.view.upper},workdir={self.view.work}"
-        mrg = self.view.merged
-        cmd = ["mount", "-t", "overlay", "overlay", "-o", opts, mrg]
+    def __enter__(self):
+        """Allows 'with SandBox(target) as sb:' syntax for auto-cleanup."""
+        self.mount_overlay()
+        self.mount_system_dirs()
+        self.setup_debian_policy()
+        return self
 
-        try:
-            subprocess.run(cmd, check=True)
-            self.mounts.append(mrg)
-            print(f"Successfully mounted OverlayFS at {mrg}")
-        except subprocess.CalledProcessError as e:
-            print(f"Mount failed: {e}")
-            raise
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Automatically cleans up even if an error occurs."""
+        self.cleanup()
+
+    def mount_overlay(self):
+        opts = f"lowerdir={self.view.lower},upperdir={self.view.upper},workdir={self.view.work}"
+
+        cmd = ["mount", "-t", "overlay", "overlay", "-o", opts, self.view.merged]
+        subprocess.run(cmd, check=True)
+        self.mounts.append(self.view.merged)
 
     def mount_system_dirs(self):
-        """Bind mount essential system dirs so scripts don't crash."""
-        system_dirs = ["/proc", "/sys", "/dev", "/dev/pts"]
-
-        for d in system_dirs:
+        for d in SYSTEM_DIRS:
             target_path = os.path.join(self.view.merged, d.lstrip("/"))
-            # Ensure the mount point exists inside the sandbox
             os.makedirs(target_path, exist_ok=True)
-
-            cmd = ["mount", "--bind", d, target_path]
-            subprocess.run(cmd, check=True)
+            subprocess.run(["mount", "--bind", d, target_path], check=True)
             self.mounts.append(target_path)
 
-    def run_command(self, command_list):
-        """Runs a command inside the sandbox using chroot."""
-        # Example: command_list = ["/bin/sh", "/var/lib/dpkg/info/package.postinst"]
-        # Note: Paths in command_list must be relative to the sandbox root!
+    def setup_debian_policy(self):
+        """
+            Prevents postinst scripts from failing on systemd calls.
+        """
+        policy_path = os.path.join(self.view.merged, POLICY_PATH)
+        os.makedirs(os.path.dirname(policy_path), exist_ok=True)
 
+        with open(policy_path, "w") as f:
+            f.write(POLICY_BLOCKER_SCRIPT)
+        os.chmod(policy_path, 0o755) # 0o755 -> rwxr-xr-x
+
+    def run_command(self, command_list):
+        # We must provide a PATH or basic tools like 'ls' or 'cp' won't be found
         full_cmd = ["chroot", self.view.merged] + command_list
-        return subprocess.run(full_cmd)
+        return subprocess.run(full_cmd, env=OVERLAYFS_ENV)
 
     def cleanup(self):
         """Unmounts everything in reverse order."""
-        for path in reversed(self.view.mounts):
-            subprocess.run(["umount", "-l", path], check=True)
-        self.view.mounts = []
+        for path in reversed(self.mounts):
+            # Use -l (lazy) to ensure it unmounts even if files are open
+            subprocess.run(["umount", "-l", path], check=False)
+        self.mounts = []
         print("Sandbox cleaned up.")

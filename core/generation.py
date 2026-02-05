@@ -1,7 +1,7 @@
-import os
+import shutil
 
-from health import HealthChecker
-
+from health import HealthChecker, Conflict
+from config import *
 
 class View:
     def __init__(self, gen_path):
@@ -16,8 +16,10 @@ class View:
 
 
 class GenerationBuilder:
-    def __init__(self, generation_id, store_root="/opt/my-store"):
-        self.gen_path = f"/var/lib/generations/{generation_id}"
+    def __init__(self, generation_id, store_root=STORE_ROOT):
+        self.gen_path = f"{GEN_ROOT}{generation_id}"
+        self.current_link = Path(CURRENT_SYSTEM_LINK)
+
         self.views = View(self.gen_path)
         self.store_root = store_root
 
@@ -73,11 +75,11 @@ class GenerationBuilder:
                         continue
 
                     # It's a real conflict. Log it for the Health Checker.
-                    conflicts.append({
-                        "path": dst_file,
-                        "old_source": os.readlink(dst_file) if os.path.islink(dst_file) else "real_file",
-                        "new_source": src_file
-                    })
+                    conflicts.append(Conflict(path=dst_file, new_source=src_file))
+
+                    #"path": dst_file,
+                    #"old_source": os.readlink(dst_file) if os.path.islink(dst_file) else "real_file",
+                    #"new_source": src_file
 
                     #Priority (Overwrite)
                     os.remove(dst_file)
@@ -87,3 +89,40 @@ class GenerationBuilder:
         # Save the conflict log into the generation folder
         if conflicts:
             self.health.add_conflicts(conflicts)
+
+    def commit(self):
+        """Finalizes the generation if healthy."""
+        gen_path = Path(self.gen_path)
+        root_view = self.views.lower
+
+        try:
+            # Run the health check
+            self.health.is_healthy(root_view)
+
+            # Atomic Switch
+            # We create a temp symlink first, then rename it to overwrite the old one
+            temp_link = self.current_link.parent / "current.tmp"
+            if temp_link.exists():
+                temp_link.unlink()
+
+            os.symlink(gen_path, temp_link)
+
+            # This is an atomic operation in Linux!
+            os.rename(temp_link, self.current_link)
+
+            print(f"[Transaction] Committed System is now running {gen_path.name}")
+            return True
+
+        except Exception as e:
+            print(f"[Transaction] Failed: {e}")
+            self.rollback()
+            return False
+
+    def rollback(self):
+        """Wipes the failed generation to save space."""
+
+        if os.path.exists(self.gen_path):
+            shutil.rmtree(self.gen_path)
+            print(f"[Rollback] Removing failed generation at {self.gen_path}")
+        else:
+            print(f"[Rollback] {self.gen_path} not found.")
