@@ -52,8 +52,8 @@ class SandBox:
 
     def cleanup(self):
         """Unmounts everything in reverse order."""
-        for path in reversed(self.mounts):
+        for m_path in reversed(self.mounts):
             # Use -l (lazy) to ensure it unmounts even if files are open
-            subprocess.run(["umount", "-l", path], check=False)
+            subprocess.run(["umount", "-l", m_path], check=False)
         self.mounts = []
         print("Sandbox cleaned up.")

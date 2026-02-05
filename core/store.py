@@ -16,6 +16,7 @@ class Store:
     def full_path(self, path):
         return os.path.join(self.root, path)
 
+
     def update(self, pkg : Dict) -> str:
         store_path = pkg["Store_Path"]
         if os.path.exists(store_path):
@@ -47,7 +48,7 @@ class Store:
             content_dir = os.path.join(target_dir, "contents")
             os.makedirs(content_dir)
 
-            # dpkg-deb -x extracts the data.tar (files destined for /usr, /bin, etc)
+            # dpkg-deb -x extracts the data.tar (files destined for /usr, /bin, etc.)
             subprocess.run(["dpkg-deb", "-x", deb_full_path, content_dir], check=True)
 
             # Extract .deb control scripts (preinst, postinst, etc)

@@ -38,9 +38,9 @@ class HealthChecker:
         broken_links = []
         for root, dirs, files in os.walk(root_view):
             for name in files + dirs:
-                path = Path(root) / name
-                if path.is_symlink() and not path.exists():
-                    broken_links.append(str(path))
+                root_path = Path(root) / name
+                if root_path.is_symlink() and not root_path.exists():
+                    broken_links.append(str(root_path))
         return broken_links
 
     def is_healthy(self, root_view):

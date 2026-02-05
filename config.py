@@ -5,7 +5,8 @@ from pathlib import Path
 STORE_NODE = ""
 ENDPOINTS = {
     "-d" : "download_pkg",
-    "-i" : "packages",
+    "-i" : "pkg_by_name",
+    "-ih" : "pkg_by_hash"
 }
 
 # Base Paths

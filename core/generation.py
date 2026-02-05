@@ -1,4 +1,5 @@
 import shutil
+import json
 
 from health import HealthChecker, Conflict
 from config import *
@@ -17,13 +18,14 @@ class View:
 
 class GenerationBuilder:
     def __init__(self, generation_id, store_root=STORE_ROOT):
-        self.gen_path = f"{GEN_ROOT}{generation_id}"
+        self.gen_path = Path(f"{GEN_ROOT}{generation_id}")
         self.current_link = Path(CURRENT_SYSTEM_LINK)
 
         self.views = View(self.gen_path)
         self.store_root = store_root
-
         self.health = HealthChecker()
+
+        self.package_list = []
 
     def _gen_setup(self):
         """
@@ -51,6 +53,24 @@ class GenerationBuilder:
             else:
                 print(f"Error: {pkg} content not found in store.")
 
+        self._save_manifest()
+
+    def _save_manifest(self):
+        manifest_path = self.gen_path / "manifest.json"
+        with open(manifest_path, "w") as f:
+            json.dump({"packages": self.package_list}, f, indent=4)
+        print(f"[Builder] Manifest saved to {manifest_path}")
+
+    @staticmethod
+    def get_active_packages():
+        """Helper to see what is currently running."""
+        # Use the global symlink to find the current manifest
+        manifest_path = Path("/system/current/manifest.json")
+        if not manifest_path.exists():
+            return []
+        with open(manifest_path, "r") as f:
+            data = json.load(f)
+            return data.get("packages", [])
 
     def _link_tree(self, src_root : str, dst_root : str):
         """
@@ -92,7 +112,7 @@ class GenerationBuilder:
 
     def commit(self):
         """Finalizes the generation if healthy."""
-        gen_path = Path(self.gen_path)
+        gen_path = self.gen_path
         root_view = self.views.lower
 
         try:
@@ -126,3 +146,4 @@ class GenerationBuilder:
             print(f"[Rollback] Removing failed generation at {self.gen_path}")
         else:
             print(f"[Rollback] {self.gen_path} not found.")
+

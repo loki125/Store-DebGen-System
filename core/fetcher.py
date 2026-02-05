@@ -40,6 +40,7 @@ class Fetcher:
     def download_file(self, save_path, endpoint="download", params=None) -> bool:
         """
         Downloads a file/stream and saves it to disk.
+        :param params:
         :param endpoint: The API path
         :param save_path: Where to save the file
         """
