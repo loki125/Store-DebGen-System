@@ -112,8 +112,10 @@ def main(argv=None):
 
     if args.command == "fetcher":
         if args.i: #ddls fetcher -i <package>
-            pprint(store.fetcher.get(ENDPOINTS["-i"]), args.i)
-
+            resp = store.fetcher.get(ENDPOINTS["-i"]), args.i
+            print(json.dumps(resp, indent=4, sort_keys=True) if isinstance(resp, dict) \
+                   else resp)
+            
         elif args.d:
             arg = args.d
             query : Dict = store.fetcher.get(ENDPOINTS["-ih"], arg[0]) if len(arg) == 1 \

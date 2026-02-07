@@ -1,7 +1,7 @@
 import shutil
 import json
 
-from health import HealthChecker, Conflict
+from .health import HealthChecker, Conflict
 from config import *
 
 class View:

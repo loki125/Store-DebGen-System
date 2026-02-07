@@ -4,7 +4,7 @@ import zipfile
 import subprocess
 import shutil
 
-from fetcher import Fetcher
+from .fetcher import Fetcher
 
 class Store:
     def __init__(self, fetcher : Fetcher, root="/opt/my-store"):

@@ -1,5 +1,5 @@
 import requests
-from typing import Any
+from typing import Dict
 from urllib.parse import urljoin
 
 from config import *
@@ -16,7 +16,7 @@ class Fetcher:
         """Helper to join the base URL with the endpoint safely."""
         return urljoin(self.base_url, endpoint)
     
-    def get(self, endpoint, params=None) -> None | str | Any:
+    def get(self, endpoint, params=None) -> Dict | str:
         """
         Sends a GET request.
         :param endpoint: The API path
@@ -28,14 +28,17 @@ class Fetcher:
         try:
             response = self.session.get(url, params=params)
             response.raise_for_status() # Raises error for 4xx or 5xx status codes
+
             return response.json()
+        
         except requests.exceptions.HTTPError as err:
-            print(f"HTTP Error: {err}")
+            return f"Distributer Error: {err}"
+        
         except requests.exceptions.JSONDecodeError:
             return response.text # Return text if response isn't JSON
-        except Exception as e:
-            print(f"An error occurred: {e}")
-            return None
+        
+        except Exception:
+            return "An error occurred trying to connect to distributer. check network connection or store-node in your network"
         
     def download_file(self, save_path, endpoint="download", params=None) -> bool:
         """

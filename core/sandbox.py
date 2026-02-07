@@ -1,6 +1,6 @@
 import subprocess
 
-from generation import GenerationBuilder, View
+from .generation import GenerationBuilder, View
 from config import *
 
 class SandBox:
