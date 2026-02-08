@@ -51,7 +51,7 @@ class Fetcher:
         
         # stream=True ensures we don't download the whole file into RAM at once
         try:
-            with self.session.get(url, params=params, stream=True) as response:
+            with self.session.get(url, params={"store_path" : params}, stream=True) as response:
                 response.raise_for_status()
 
                 # 2. Open a local file in 'wb' (Write Binary) mode

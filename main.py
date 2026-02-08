@@ -17,7 +17,7 @@ from core import *
 store = Store(Fetcher())
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="dpm", description="Demo Package Manager CLI")
+    parser = argparse.ArgumentParser(prog="ddls", description="Demo Package Manager CLI")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -112,13 +112,13 @@ def main(argv=None):
 
     if args.command == "fetcher":
         if args.i: #ddls fetcher -i <package>
-            resp = store.fetcher.get(ENDPOINTS["-i"]), args.i
-            print(json.dumps(resp, indent=4, sort_keys=True) if isinstance(resp, dict) \
+            resp = store.fetcher.get(ENDPOINTS["-i"], {"name": args.i})
+            print(json.dumps(resp, indent=4, sort_keys=True) if isinstance(resp, list) \
                    else resp)
             
         elif args.d:
             arg = args.d
-            query : Dict = store.fetcher.get(ENDPOINTS["-ih"], arg[0]) if len(arg) == 1 \
+            query : Dict = store.fetcher.get(ENDPOINTS["-ih"], {"hash": arg[0]}) if len(arg) == 1 \
                 else store.fetcher.get(ENDPOINTS["-ih"],{"name" : arg[0], "version" : arg[1]})
 
             store.update(query)
