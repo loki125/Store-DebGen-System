@@ -4,17 +4,6 @@ import json
 from .health import HealthChecker, Conflict
 from config import *
 
-class View:
-    def __init__(self, gen_path):
-        self.gen_path = gen_path
-        self.work = os.path.join(self.gen_path, "work")
-        self.upper = os.path.join(self.gen_path, "delta")
-        self.merged = os.path.join(self.gen_path, "merged")
-        self.lower = os.path.join(self.gen_path, "root")
-
-    def view_list(self):
-        return [self.work, self.upper, self.merged, self.lower]
-
 
 class GenerationBuilder:
     def __init__(self, generation_id, store_root=STORE_ROOT):
@@ -41,13 +30,13 @@ class GenerationBuilder:
 
     def build_symlink_forest(self, package_paths):
         """
-        package_paths: List of relative paths in store e.g. ['nginx-v1', 'redis-v2']
+        package_paths: List of relative paths in store
         """
         self._gen_setup()
 
         #Iterate through packages and link them into 'root'
         for pkg in package_paths:
-            pkg_full_path = os.path.join(self.store_root, pkg, "contents")
+            pkg_full_path = os.path.join(self.store_root, pkg)
             if os.path.exists(pkg_full_path):
                 self._link_tree(pkg_full_path, self.views.lower)
             else:
@@ -56,7 +45,7 @@ class GenerationBuilder:
         self._save_manifest()
 
     def _save_manifest(self):
-        manifest_path = self.gen_path / "manifest.json"
+        manifest_path = self.gen_path / MANIFEST
         with open(manifest_path, "w") as f:
             json.dump({"packages": self.package_list}, f, indent=4)
         print(f"[Builder] Manifest saved to {manifest_path}")
@@ -65,21 +54,26 @@ class GenerationBuilder:
     def get_active_packages():
         """Helper to see what is currently running."""
         # Use the global symlink to find the current manifest
-        manifest_path = Path("/system/current/manifest.json")
+        manifest_path = Path(CURRENT_SYSTEM_LINK) / MANIFEST
         if not manifest_path.exists():
             return []
         with open(manifest_path, "r") as f:
             data = json.load(f)
             return data.get("packages", [])
 
-    def _link_tree(self, src_root : str, dst_root : str):
+    def _link_tree(self, path_root : str, dst_root : str):
         """
         Recursively symlink files from src to dst.
         If dst is a directory, merge.
         """
+        src_root = os.path.join(path_root, "contents")
+        with open(os.path.join(path_root, RECIPE), "r") as f:
+            recipe = json.load(f)
+        
+        # see if depends exists, if not download them. then we need to link them to this path_root
 
         conflicts = []
-
+        #here is the symlink forest in the json, we can use it to link the files instead of walking the directory
         for root, dirs, files in os.walk(src_root):
             rel_path = os.path.relpath(root, src_root)
             dst_dir = os.path.join(dst_root, rel_path)

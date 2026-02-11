@@ -74,12 +74,12 @@ def manage_generation(command: str, pkg_path: str):
             print(f"Package {pkg_path} not found in current generation.")
             return
 
-    # 3. Create a unique ID for the new generation
+    # Create a unique ID for the new generation
     new_gen_id = f"gen-{int(time.time())}"
     builder = GenerationBuilder(new_gen_id)
 
     try:
-        # 4. Build the new state
+        # Build the new state
         builder.build_symlink_forest(new_pkg_list)
 
         # 5. Save the new manifest so the NEXT update knows what we have
@@ -121,7 +121,7 @@ def main(argv=None):
             query : Dict = store.fetcher.get(ENDPOINTS["-ih"], {"hash": arg[0]}) if len(arg) == 1 \
                 else store.fetcher.get(ENDPOINTS["-ih"],{"name" : arg[0], "version" : arg[1]})
 
-            store.update(query)
+            print(f"statuse: {store.update(query)}")
 
     elif args.command == "store":
         manage_generation(args.store_cmd, args.path)

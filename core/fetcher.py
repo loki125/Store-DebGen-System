@@ -1,5 +1,5 @@
 import requests
-from typing import Dict
+import re
 from urllib.parse import urljoin
 
 from config import *
@@ -40,7 +40,7 @@ class Fetcher:
         except Exception:
             return "An error occurred trying to connect to distributer. check network connection or store-node in your network"
         
-    def download_file(self, save_path, endpoint="download", params=None) -> bool:
+    def download_file(self, save_path, endpoint="download_pkg", params=None) -> str | None:
         """
         Downloads a file/stream and saves it to disk.
         :param params:
@@ -53,19 +53,25 @@ class Fetcher:
         try:
             with self.session.get(url, params={"store_path" : params}, stream=True) as response:
                 response.raise_for_status()
+                
+                cd = response.headers.get('Content-Disposition', '')
+                filename_match = re.search(r'filename="(.+)"', cd)
+                filename = filename_match.group(1) if filename_match else None
+                if filename is None:
+                    raise Exception("Filename not found in response headers.")
 
                 # 2. Open a local file in 'wb' (Write Binary) mode
-                with open(save_path, 'wb') as f:
+                with open(os.path.join(save_path, filename), 'wb') as f:
                     # 3. Iterate over the stream in chunks (e.g., 8KB at a time)
                     for chunk in response.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
 
             print(f"File saved to {save_path}")
-            return True
+            return filename
         except requests.exceptions.HTTPError as err:
             print(f"HTTP Error: {err}")
         except Exception as e:
             print(f"An error occurred: {e}")
 
-        return False
+        return None

@@ -1,59 +1,73 @@
+import shutil
 import subprocess
 
-from .generation import GenerationBuilder, View
 from config import *
 
 class SandBox:
-    def __init__(self, target : GenerationBuilder):
-        self.target = target
-        self.view : View = target.views  # target.view has merged, lower, upper, work
-        self.mounts = []
+    def __init__(self, mounts : List[str], view : View):
+        self.view : View = view  # view has merged, lower, upper, work
+        self.mounts = mounts
 
     def __enter__(self):
         """Allows 'with SandBox(target) as sb:' syntax for auto-cleanup."""
-        self.mount_overlay()
-        self.mount_system_dirs()
-        self.setup_debian_policy()
+        for d in self.view.view_list:
+            os.makedirs(d, exists_ok=True)
+
+        lower_str = ":".join(self.mounts)
+        cmd = [
+            "mount", "-t", "overlay", "overlay",
+            "-o", f"lowerdir={lower_str},upperdir={self.view.upper},workdir={self.view.work}",
+            self.view.merged
+        ]
+        try:
+            subprocess.check_call(cmd, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Failed to mount overlay: {e}")
+        
+        #mount system directories
+        for sys_dir in SYSTEM_DIRS:
+            target = self.make_merge_dir(sys_dir)
+
+            cmd = ["mount", "--bind", sys_dir, target]
+            try:
+                subprocess.check_call(cmd, check=True, capture_output=True, text=True)
+            except subprocess.CalledProcessError as e:
+                raise RuntimeError(f"Failed to mount system directory {sys_dir}: {e}")
+        
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Automatically cleans up even if an error occurs."""
-        self.cleanup()
+        for sys_dir in SYSTEM_DIRS:
+            target = self.make_merge_dir(sys_dir)
 
-    def mount_overlay(self):
-        opts = f"lowerdir={self.view.lower},upperdir={self.view.upper},workdir={self.view.work}"
+            cmd = ["umount", "-l", target]
+            subprocess.run(cmd, check=False, capture_output=True, text=True)
 
-        cmd = ["mount", "-t", "overlay", "overlay", "-o", opts, self.view.merged]
-        subprocess.run(cmd, check=True)
-        self.mounts.append(self.view.merged)
+        subprocess.run(["umount", "-l", self.view.merged], check=False, capture_output=True, text=True)
+        shutil.rmtree(self.view.work, ignore_errors=True)
 
-    def mount_system_dirs(self):
-        for d in SYSTEM_DIRS:
-            target_path = os.path.join(self.view.merged, d.lstrip("/"))
-            os.makedirs(target_path, exist_ok=True)
-            subprocess.run(["mount", "--bind", d, target_path], check=True)
-            self.mounts.append(target_path)
+    def make_merge_dir(self, sys_dir):
+        target = os.path.join(self.view.merged, sys_dir.lstrip("/"))
+        os.makedirs(target, exist_ok=True)
 
-    def setup_debian_policy(self):
-        """
-            Prevents postinst scripts from failing on systemd calls.
-        """
-        policy_path = os.path.join(self.view.merged, POLICY_PATH)
-        os.makedirs(os.path.dirname(policy_path), exist_ok=True)
+        return target
+    
+    def commit_script(self):
+        """Communicates script results back to the Health Checker."""
+        for root, dirs, files in os.walk(self.view.upper):
+            for name in files:
+                src_file = os.path.join(root, name)
+                rel_path = os.path.relpath(src_file, self.view.upper)
+                dst_file = os.path.join(self.view.isolated_path, rel_path)
 
-        with open(policy_path, "w") as f:
-            f.write(POLICY_BLOCKER_SCRIPT)
-        os.chmod(policy_path, 0o755) # 0o755 -> rwxr-xr-x
+                # ensure the dir exists in the isolated path
+                os.makedirs(
+                    os.path.dirname(dst_file),
+                    exist_ok=True
+                )
+                
+                # commit generated files from scripts to the isolated path
+                shutil.move(src_file, dst_file)
+        
 
-    def run_command(self, command_list):
-        # We must provide a PATH or basic tools like 'ls' or 'cp' won't be found
-        full_cmd = ["chroot", self.view.merged] + command_list
-        return subprocess.run(full_cmd, env=OVERLAYFS_ENV)
-
-    def cleanup(self):
-        """Unmounts everything in reverse order."""
-        for m_path in reversed(self.mounts):
-            # Use -l (lazy) to ensure it unmounts even if files are open
-            subprocess.run(["umount", "-l", m_path], check=False)
-        self.mounts = []
-        print("Sandbox cleaned up.")
