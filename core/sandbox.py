@@ -3,9 +3,10 @@ import shutil
 import subprocess
 
 from config import *
+from utils import View
 
 class SandBox:
-    def __init__(self, mounts: List[str], view):
+    def __init__(self, mounts: List[str], view : View):
         self.view = view  # Object containing: merged, upper, work, isolated_path
         self.mounts = mounts
 

@@ -38,18 +38,6 @@ CRITICAL_PATHS = [
     "/boot"
 ]
 
-#view for overlayfs
-class View:
-    def __init__(self, isolated_path):
-        self.isolated_path = isolated_path
-        self.work = os.path.join(self.isolated_path, "work")
-        self.upper = os.path.join(self.isolated_path, "delta")
-        self.merged = os.path.join(self.isolated_path, "merged")
-        self.lower = os.path.join(self.isolated_path, "root")
-
-    def view_list(self):
-        return [self.work, self.upper, self.merged, self.lower]
-
 # Create directories if they don't exist
 for path in [STORE_ROOT, GEN_ROOT]:
     os.makedirs(path, exist_ok=True)

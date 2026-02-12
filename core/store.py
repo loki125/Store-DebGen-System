@@ -8,6 +8,7 @@ from core.sandbox import SandBox
 
 from .fetcher import Fetcher
 from config import *
+from utils import View
 
 class Store:
     def __init__(self, fetcher : Fetcher, root="/opt/my-store"):
