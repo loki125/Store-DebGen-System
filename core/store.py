@@ -84,12 +84,9 @@ class Store:
             # Create a mount namespace and mount the required paths
             with SandBox(mounts, View(hash_path)) as root_fs:
                 print(f"Running postinst script for {recipe.get('package_name')}-{recipe.get('version')} in sandbox...")
-                subprocess.run(
-                    ["chroot", root_fs.view.merged, "/" + SCRIPT_PATH + "configure"],
-                    check=True, capture_output=True, text=True
-                )
+                root_fs.run(["/" + SCRIPT_PATH + "configure"])
 
-                root_fs.commit_script()
+                root_fs.commit_changes()
 
         except Exception as e:
             print(f"Error running postinst script: {e}")

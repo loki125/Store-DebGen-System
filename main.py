@@ -54,56 +54,7 @@ def get_current_packages():
 
 
 def manage_generation(command: str, pkg_path: str):
-    # 1. Get the "starting point" (current state)
-    current_pkgs = get_current_packages()
-
-    # 2. Modify the list
-    new_pkg_list = list(current_pkgs)  # Copy
-
-    if command == "add":
-        if pkg_path not in new_pkg_list:
-            new_pkg_list.append(pkg_path)
-        else:
-            print(f"Package {pkg_path} already in generation.")
-            return
-
-    elif command == "rm":
-        if pkg_path in new_pkg_list:
-            new_pkg_list.remove(pkg_path)
-        else:
-            print(f"Package {pkg_path} not found in current generation.")
-            return
-
-    # Create a unique ID for the new generation
-    new_gen_id = f"gen-{int(time.time())}"
-    builder = GenerationBuilder(new_gen_id)
-
-    try:
-        # Build the new state
-        builder.build_symlink_forest(new_pkg_list)
-
-        # 5. Save the new manifest so the NEXT update knows what we have
-        manifest_file = builder.gen_path / "manifest.json"
-        with open(manifest_file, "w") as f:
-            json.dump(new_pkg_list, f)
-
-        # 6. Sandbox (Only needed for 'add' to run new scripts)
-        if command == "add":
-            with SandBox(builder) as sb:
-                # Assuming pkg_path is the name used in the store
-                script = "/control/postinst"
-                res = sb.run_command(["/bin/sh", script, "configure"])
-                builder.health.record_script_result(pkg_path, res.returncode)
-
-        # 7. Finalize
-        if builder.commit():
-            print(f"Successfully {command}ed {pkg_path}. Active: {new_gen_id}")
-        else:
-            print("Transaction failed.")
-
-    except Exception as e:
-        print(f"Error managing generation: {e}")
-        builder.rollback()
+    pass
 
 
 def main(argv=None):
