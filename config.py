@@ -1,5 +1,5 @@
 import os
-from typing import List, Dict
+from typing import List, Dict, Tuple, Set
 from pathlib import Path
 
 # Fetcher API
@@ -14,7 +14,9 @@ ENDPOINTS = {
 BASE_DIR = Path("/var/lib/isolated-manager")
 STORE_ROOT = "/opt/my-store"
 GEN_ROOT = "/var/lib/generations"
+GEN_MOUNT_BASE = "/mnt/generations"
 CURRENT_SYSTEM_LINK = "/system/current"
+CURRENT_MANIFEST_LINK = os.path.join(GEN_ROOT, "current.json")
 MANIFEST =  "manifest.json"
 RECIPE = "recipe.json"
 

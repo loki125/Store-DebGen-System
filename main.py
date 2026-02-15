@@ -5,11 +5,8 @@ DDLS (DaeDaLuS) CLI skeleton.
 """
 
 import argparse
-from pprint import pprint
 import sys
 import json
-import time
-from typing import Dict
 
 from config import *
 from core import *
@@ -42,16 +39,6 @@ def build_parser() -> argparse.ArgumentParser:
     store_sub.add_parser("rollback", help="Rollback store")
 
     return parser
-
-def get_current_packages():
-    """Reads the manifest of the currently active generation."""
-    manifest_path = Path(CURRENT_SYSTEM_LINK) / "manifest.json"
-    if not manifest_path.exists():
-        return []  # Brand-new system
-
-    with open(manifest_path, "r") as f:
-        return json.load(f)
-
 
 def manage_generation(command: str, pkg_path: str):
     pass

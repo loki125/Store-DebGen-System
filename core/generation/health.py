@@ -1,21 +1,6 @@
-from dataclasses import dataclass, field
-
 from config import *
+from utils import Conflict, Result
 
-@dataclass
-class Conflict:
-    path : str
-    old_source : str = field(init=False)
-    new_source : str
-
-    def __post_init__(self):
-        self.old_source = os.readlink(self.path) if os.path.islink(self.path) else "real_file"
-
-@dataclass
-class Result:
-    pkg : str
-    exit_code : int
-    output : str
 
 class HealthChecker:
     def __init__(self):

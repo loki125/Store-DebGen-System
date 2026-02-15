@@ -20,7 +20,7 @@ class GenManifest:
     prev_id: Optional[int]
     roots: List[str] # ["name=version"]
     active_layers: List[Layer]
-    relations: Dict[str, Dict[str, int]] # {hash: {dep_hash: weight}}
+    relations: Dict[str, Dict[str, int]] #{hash_path : {hash_path : isolated_priority number} }
     active: bool = False
     health: HealthInfo = field(default_factory=HealthInfo)
 
@@ -47,3 +47,21 @@ class View:
 
     def view_list(self):
         return [self.work, self.upper, self.merged, self.lower]
+    
+
+#healther helpers
+
+@dataclass
+class Conflict:
+    path : str
+    old_source : str = field(init=False)
+    new_source : str
+
+    def __post_init__(self):
+        self.old_source = os.readlink(self.path) if os.path.islink(self.path) else "real_file"
+
+@dataclass
+class Result:
+    pkg : str
+    exit_code : int
+    output : str
