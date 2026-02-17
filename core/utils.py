@@ -30,6 +30,7 @@ class GenManifest:
     @classmethod
     def from_dict(cls, data: dict):
         # Convert nested dicts back into Dataclasses
+        data = data.copy()
         health = HealthInfo(**data.pop("health"))
         layers = [Layer(**l) for l in data.pop("active_layers")]
         return cls(active_layers=layers, health=health, **data)
@@ -44,9 +45,10 @@ class View:
         self.upper = os.path.join(self.isolated_path, "delta")
         self.merged = os.path.join(self.isolated_path, "merged")
         self.lower = os.path.join(self.isolated_path, "root")
-
-    def view_list(self):
-        return [self.work, self.upper, self.merged, self.lower]
+        
+    def ensure_dirs(self):
+        for p in [self.work, self.upper, self.merged, self.lower]:
+            os.makedirs(p, exist_ok=True)
     
 
 #healther helpers
@@ -58,7 +60,13 @@ class Conflict:
     new_source : str
 
     def __post_init__(self):
-        self.old_source = os.readlink(self.path) if os.path.islink(self.path) else "real_file"
+        try:
+            if os.path.islink(self.path):
+                self.old_source = os.readlink(self.path)
+            else:
+                self.old_source = "real_file"
+        except OSError:
+            self.old_source = "unknown"
 
 @dataclass
 class Result:

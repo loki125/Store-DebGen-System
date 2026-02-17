@@ -6,6 +6,8 @@ DDLS (DaeDaLuS) CLI skeleton.
 
 import argparse
 import sys
+import os
+import subprocess
 import json
 
 from config import *
@@ -40,13 +42,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     return parser
 
+def setup(argv):
+    # Create directories if they don't exist
+    for path in [BASE_DIR, STORE_ROOT, GEN_ROOT]:
+        os.makedirs(path, exist_ok=True)
+
+    if not os.path.isdir(BASE_ROOTFS):
+        os.makedirs(BASE_ROOTFS, exist_ok=False)
+        subprocess.run(["debootstrap", "--variant=minbase", "stable", str(BASE_ROOTFS)], check=True)
+
+    parser = build_parser()
+    return parser, parser.parse_args(argv)
+
+
 def manage_generation(command: str, pkg_path: str):
     pass
 
 
 def main(argv=None):
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    parser, args = setup(argv)
 
     if args.command == "fetcher":
         if args.i: #ddls fetcher -i <package>

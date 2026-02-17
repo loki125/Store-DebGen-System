@@ -1,8 +1,12 @@
 import requests
 import re
+import json
 from urllib.parse import urljoin
 
 from config import *
+
+logger = logging.getLogger("Fetcher")
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class Fetcher:
     def __init__(self, store_node_url=STORE_NODE, headers=None):
@@ -16,7 +20,7 @@ class Fetcher:
         """Helper to join the base URL with the endpoint safely."""
         return urljoin(self.base_url, endpoint)
     
-    def get(self, endpoint, params=None) -> Dict | str:
+    def get(self, endpoint, params=None) -> Dict :
         """
         Sends a GET request.
         :param endpoint: The API path
@@ -32,17 +36,16 @@ class Fetcher:
             return response.json()
         
         except requests.exceptions.HTTPError as err:
-            return f"Distributer Error: {err}"
+            raise RuntimeError(f"Distributer Error: {err}")
         
-        except requests.exceptions.JSONDecodeError:
-            return response.text # Return text if response isn't JSON
+        except json.JSONDecodeError:
+            raise RuntimeError(response.text) # raise text if response isn't JSON
         
-        except Exception:
-            return "An error occurred trying to connect to distributer. check network connection or store-node in your network"
-        
+        except requests.RequestException as e:
+            raise RuntimeError("Failed to contact distributor") from e      
     def download_file(self, save_path, endpoint="download_pkg", params=None) -> str | None:
         """
-        Downloads a file/stream and saves it to disk.
+        Downloads a file/stream and saves it to save_path.
         :param params:
         :param endpoint: The API path
         :param save_path: Where to save the file
@@ -51,7 +54,10 @@ class Fetcher:
         
         # stream=True ensures we don't download the whole file into RAM at once
         try:
-            with self.session.get(url, params={"store_path" : params}, stream=True) as response:
+            if not os.path.exists(save_path):
+                raise FileNotFoundError(f"Save path {save_path} does not exist.")
+            
+            with self.session.get(url, params={"store_path" : params}, stream=True, timeout=10) as response:
                 response.raise_for_status()
                 
                 cd = response.headers.get('Content-Disposition', '')
@@ -60,18 +66,15 @@ class Fetcher:
                 if filename is None:
                     raise Exception("Filename not found in response headers.")
 
-                # 2. Open a local file in 'wb' (Write Binary) mode
                 with open(os.path.join(save_path, filename), 'wb') as f:
-                    # 3. Iterate over the stream in chunks (e.g., 8KB at a time)
                     for chunk in response.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
 
-            print(f"File saved to {save_path}")
             return filename
         except requests.exceptions.HTTPError as err:
-            print(f"HTTP Error: {err}")
+            logger.error(f"HTTP Error: {err}")
         except Exception as e:
-            print(f"An error occurred: {e}")
+            logger.error(f"An error occurred: {e}")
 
         return None

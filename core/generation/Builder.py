@@ -1,5 +1,6 @@
 import json
 import time
+import shutil
 
 from config import *
 from utils import GenManifest, Layer, HealthInfo
@@ -57,13 +58,12 @@ class GenerationBuilder:
             data = json.load(f)
             return GenManifest.from_dict(data)
 
-    def create_new_gen(self, to_add=None, to_remove=None):
+    def create_new_gen(self, to_add: List[str] = None, to_rm: List[str] = None):
         """
         Main entry point for changing the system state.
-        Algorithem:
+        Global Priority Algorithem:
 
         - find current manifest and copy it
-
         remove_pkgs = []
 
         for pkg each remove_pkgs
@@ -87,29 +87,97 @@ class GenerationBuilder:
                 
         """
         current: GenManifest = self.get_current_manifest()
-        new_gen: GenManifest = current.copy()
+        new_gen: GenManifest = shutil.copy.deepcopy(current)
         
-        # Update IDs
         new_gen.prev_id = current.id
         new_gen.id = int(time.time())
         new_gen.gen_number += 1
         new_gen.active = False
 
-        # Processing Removals
-        if to_remove:
-            for pkg_name in to_remove:
-                self._recursive_remove(new_gen, pkg_name)
+        # REMOVE LOGIC
+        if to_rm:
+            # The queue starts with the hashes the user explicitly wants gone
+            remove_queue = to_rm.copy()
+            
+            while remove_queue:
+                target_hash = remove_queue.pop(0)
+                
+                # If this package exists in our relations map (it has dependencies)
+                if target_hash in new_gen.relations:
+                    # Look at every dependency this package points to
+                    for dep_hash, isolated_p in list(new_gen.relations[target_hash].items()):
+                        
+                        # Find the dependency's layer to update its global priority
+                        dep_layer = next((l for l in new_gen.active_layers if l.h == dep_hash), None)
+                        
+                        if dep_layer:
+                            # Subtract the isolated weight from the global priority
+                            dep_layer.p -= isolated_p
+                            
+                            # Delete the relation link
+                            del new_gen.relations[target_hash][dep_hash]
 
-        # Processing Additions 
+                            # IF PRIORITY <= 0: The package is an orphan. 
+                            # Add it to the queue to clean up ITS dependencies.
+                            if dep_layer.p <= 0:
+                                remove_queue.append(dep_hash)
+
+                # Finally, remove the package layer from the manifest
+                new_gen.active_layers = [l for l in new_gen.active_layers if l.h != target_hash]
+                if target_hash in new_gen.relations:
+                    del new_gen.relations[target_hash]
+                
+                # Remove from roots if it was there
+                new_gen.roots = [r for r in new_gen.roots if r != target_hash]
+
+        # ADDITION LOGIC
         if to_add:
-            for pkg_name in to_add:
-                self._recursive_add(new_gen, pkg_name)
+            add_queue = to_add.copy()
+            
+            while add_queue:
+                current_hash = add_queue.pop(0)
+                
+                # Get the recipe directly via hash_path
+                recipe = self.store.get_recipe(current_hash)
+                if not recipe: 
+                    print(f"[!] Skip: Recipe for {current_hash} not found in store.")
+                    continue
+                
+                # Ensure the layer exists in the new generation
+                pkg_layer = next((l for l in new_gen.active_layers if l.h == current_hash), None)
+                if not pkg_layer:
+                    # Initialize with global priority 0 (it will be boosted by relations)
+                    # Or 1000 if it's a Top-Level requested package
+                    prio = 1000 if current_hash in to_add else 0
+                    pkg_layer = Layer(h=current_hash, p=prio)
+                    new_gen.active_layers.append(pkg_layer)
+
+                if current_hash not in new_gen.relations:
+                    new_gen.relations[current_hash] = {}
+
+                # Process the "mount_instructions" (The dependencies)
+                # Assumes structure: recipe['mount_instructions']['required_mounts']
+                # Which is a list of { "hash": "...", "isolated_priority": int }
+                mounts = recipe.get("mount_instructions", {}).get("required_mounts", [])
+                
+                for mount in mounts:
+                    dep_hash = mount["hash"]
+                    isolated_p = mount["isolated_priority"]
+
+                    # 1. If the dependency layer doesn't exist, create it and queue it
+                    dep_layer = next((l for l in new_gen.active_layers if l.h == dep_hash), None)
+                    if not dep_layer:
+                        dep_layer = Layer(h=dep_hash, p=0)
+                        new_gen.active_layers.append(dep_layer)
+                        # Queue this dependency to find its own children
+                        add_queue.append(dep_hash)
+
+                    # 2. Link them in the relations map if not already linked
+                    if dep_hash not in new_gen.relations[current_hash]:
+                        new_gen.relations[current_hash][dep_hash] = isolated_p
+                        
+                        # 3. Add to the dependency's global priority
+                        dep_layer.p += isolated_p
 
         return new_gen
-
-    def _recursive_remove(self, gen, pkg_name):
-        pass
-
-    def _recursive_add(self, gen, pkg_name):
-        pass
     

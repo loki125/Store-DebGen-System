@@ -1,5 +1,5 @@
-import os
 import shutil
+import os
 import subprocess
 
 from config import *
@@ -9,43 +9,57 @@ class SandBox:
     def __init__(self, mounts: List[str], view : View):
         self.view = view  # Object containing: merged, upper, work, isolated_path
         self.mounts = mounts
+        self._mounted = []
 
     def __enter__(self):
         """Sets up the sandbox: dirs, overlay, system mounts, and policy blocker."""
-        
-        # Create Directories 
-        for d in [self.view.merged, self.view.upper, self.view.work]:
-            os.makedirs(d, exist_ok=True)
-
-        # Mount OverlayFS 
-        lower_str = ":".join(self.mounts)
-        cmd = [
-            "mount", "-t", "overlay", "overlay",
-            "-o", f"lowerdir={lower_str},upperdir={self.view.upper},workdir={self.view.work}",
-            self.view.merged
-        ]
-        
         try:
-            # check_call doesn't support capture_output, changed to run
-            subprocess.check_call(cmd, check=True)
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Failed to mount overlay: {e.stderr}")
-        
-        # Mount System Directories
-        for sys_dir in SYSTEM_DIRS: 
-            target = self.make_merge_dir(sys_dir)
-            
-            cmd = ["mount", "--bind", sys_dir, target]
-            try:
-                subprocess.check_call(cmd, check=True)
-            except subprocess.CalledProcessError as e:
-                # Cleanup if one fails? For now, just raise
-                raise RuntimeError(f"Failed to mount {sys_dir}: {e.stderr}")
+            # Create Directories 
+            self.view.ensure_dirs()
 
-        # prevent services from starting. 
-        self._create_policy_blocker()
+            # Mount OverlayFS 
+            for p in self.mounts:
+                if not os.path.isdir(p):
+                    raise RuntimeError(f"Lower dir missing: {p}")
         
-        return self
+            lower_str = ":".join(self.mounts)
+            cmd = [
+                "mount", "-t", "overlay", "overlay",
+                "-o", f"lowerdir={lower_str},upperdir={self.view.upper},workdir={self.view.work}",
+                self.view.merged
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(f"Failed to mount overlay: {result.stderr}")
+            self._mounted.append(self.view.merged)
+            
+            # Mount System Directories
+            for sys_dir in SYSTEM_DIRS: 
+                target = self.make_merge_dir(sys_dir)
+                
+                result = subprocess.run(
+                    ["mount", "--bind", sys_dir, target],
+                    capture_output=True,
+                    text=True
+                )
+                
+                if result.returncode != 0:
+                    raise RuntimeError(f"Failed to mount {sys_dir}: {result.stderr}")
+
+                self._mounted.append(target)
+
+            # prevent services from starting. 
+            self._create_policy_blocker()
+
+            return self
+
+        except Exception as e:
+            for m in reversed(self._mounted):
+                subprocess.run(["umount", "-l", m], check=False)
+                
+            raise RuntimeError(f"Sandbox setup failed: {e}")
+        
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Clean up mounts and temp dirs."""
@@ -57,7 +71,7 @@ class SandBox:
 
         subprocess.run(["umount", "-l", self.view.merged], check=False)
 
-        # 3. Delete work dir
+        # Delete work dir
         shutil.rmtree(self.view.work, ignore_errors=True)
 
     def _create_policy_blocker(self):
@@ -85,12 +99,10 @@ class SandBox:
         # Chroot requires the full command to be wrapped
         real_cmd = ["chroot", self.view.merged] + command
         
-        print(f"[*] Sandbox Exec: {' '.join(command)}")
         return subprocess.run(real_cmd, env=env, check=True)
 
     def commit_changes(self):
         """Moves generated files from 'upper' to the permanent store."""
-        print("[*] Committing changes...")
         for root, dirs, files in os.walk(self.view.upper):
             for name in files:
                 src_file = os.path.join(root, name)

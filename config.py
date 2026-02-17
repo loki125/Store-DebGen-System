@@ -1,5 +1,6 @@
 import os
-from typing import List, Dict, Tuple, Set
+from typing import List, Dict, Tuple, Set, Optional
+import logging
 from pathlib import Path
 
 # Fetcher API
@@ -11,14 +12,37 @@ ENDPOINTS = {
 }
 
 # Base Paths
-BASE_DIR = Path("/var/lib/isolated-manager")
-STORE_ROOT = "/opt/my-store"
-GEN_ROOT = "/var/lib/generations"
-GEN_MOUNT_BASE = "/mnt/generations"
-CURRENT_SYSTEM_LINK = "/system/current"
-CURRENT_MANIFEST_LINK = os.path.join(GEN_ROOT, "current.json")
-MANIFEST =  "manifest.json"
-RECIPE = "recipe.json"
+
+"""
+STRUCTURE:
+
+/var/lib/isolated-manager        ← BASE_DIR
+ ├── base/                       ← debootstrap rootfs
+ ├── store/                      ← package file store
+ ├── generations/                ← generation manifests + roots
+
+/run/isolated-manager            ← runtime state
+ ├── current → generation link
+
+/mnt/isolated-manager/generation           ← generation mounts
+
+"""
+# GLOBAL VAR
+MANAGER : str = "isolated-manager"
+BASE_DIR = Path(os.getenv("IM_BASE", f"/var/lib/{MANAGER}"))
+
+MANIFEST : str =  "manifest.json"
+RECIPE : str = "recipe.json"
+
+
+# PATHS
+BASE_ROOTFS = BASE_DIR / "base"
+STORE_ROOT = BASE_DIR / os.getenv("IM_STORE", "store")
+GEN_ROOT =  BASE_DIR / os.getenv("IM_GEN", "generations")
+GEN_MOUNT_BASE = Path(f"/mnt/{MANAGER}/generations")
+CURRENT_SYSTEM_LINK = Path(f"/run/{MANAGER}/current")
+CURRENT_MANIFEST_LINK = GEN_ROOT / "current.json"
+
 
 
 # Sandbox / OverlayFS Constants
@@ -39,7 +63,3 @@ CRITICAL_PATHS = [
     "/etc/network/interfaces",
     "/boot"
 ]
-
-# Create directories if they don't exist
-for path in [STORE_ROOT, GEN_ROOT]:
-    os.makedirs(path, exist_ok=True)

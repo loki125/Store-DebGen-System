@@ -1,5 +1,4 @@
 import json
-import os
 import zipfile
 import subprocess
 import shutil
@@ -9,6 +8,9 @@ from core.sandbox import SandBox
 from .fetcher import Fetcher
 from config import *
 from utils import View
+
+logger = logging.getLogger("Store")
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class Store:
     def __init__(self, fetcher : Fetcher, root="/opt/my-store"):
@@ -22,11 +24,13 @@ class Store:
 
 
     def update(self, pkg : Dict) -> str:
+
         store_path = pkg["Store_Path"]
         target_dir = self.full_path(store_path)
         
         if os.path.exists(target_dir):
             return "pkg already exists"
+        os.makedirs(os.path.dirname(target_dir), exist_ok=True)
         
         zip_name = self.fetcher.download_file(target_dir)
         if zip_name is None:
@@ -41,15 +45,17 @@ class Store:
 
             mount_instructions = recipe.get("mount_instructions", {})
             for hash_path in mount_instructions["required_mounts"]:
-                if not os.path.exists(hash_path):
+                f_hash_path = self.full_path(hash_path)
+                if os.path.exists(f_hash_path):
                     continue
+                os.makedirs(f_hash_path, exist_ok=False)
                 
-                zip_name = self.fetcher.download_file(hash_path)
+                zip_name = self.fetcher.download_file(f_hash_path) 
                 if zip_name is None:
                     raise RuntimeError(f"download depend {hash_path} failed")
                 
-                self._extract_pkg(zip_name, hash_path)
-                self._integrate(hash_path)
+                self._extract_pkg(zip_name, f_hash_path)
+                self._integrate(f_hash_path)
 
             self._integrate(target_dir)
 
@@ -67,9 +73,10 @@ class Store:
             recipe = json.load(f)
         
         link_data : Dict[str, str]
+        created_symlinks = []
         for link_data in recipe.get("symlinks_forest", []):
 
-            link_path = os.path.join(self.root, link_data["src"])
+            link_path = Path(self.root) / link_data["src"]
             target_path = link_data["dst"]
 
             link_path.parent.mkdir(parents=True, exist_ok=True)
@@ -77,21 +84,25 @@ class Store:
                 link_path.unlink()
 
             os.symlink(target_path, link_path)
+            created_symlinks.append(link_path)
         
-        mounts : List[str] = recipe.get("mount_instructions", {}).get("required_mounts", [])
+        mounts = list(recipe.get("mount_instructions", {}).get("required_mounts", []))
         mounts.append(hash_path) # ensure the pkg itself is mounted
 
         try:
             # Create a mount namespace and mount the required paths
             with SandBox(mounts, View(hash_path)) as root_fs:
-                print(f"Running postinst script for {recipe.get('package_name')}-{recipe.get('version')} in sandbox...")
+                logger.info(f"Running postinst script for {recipe.get('package_name')}-{recipe.get('version')} in sandbox...")
                 root_fs.run(["/" + SCRIPT_PATH + "configure"])
 
                 root_fs.commit_changes()
 
         except Exception as e:
-            print(f"Error running postinst script: {e}")
-            # TODO: cleanup
+            for link in created_symlinks:
+                if link.exists() and link.is_symlink():
+                    link.unlink()
+
+            raise RuntimeError(f"Error running postinst script: {e}")
 
 
     def _extract_pkg(self, zip_name, target_dir):
@@ -103,7 +114,7 @@ class Store:
         # Look for the .deb inside
         deb_file = next((f for f in os.listdir(target_dir) if f.endswith('.deb')), None)
         if not deb_file:
-            return "No .deb found in zip"
+            raise Exception("No .deb found in zip")
 
         deb_full_path = os.path.join(target_dir, deb_file)
 
@@ -123,5 +134,19 @@ class Store:
         os.remove(zip_path)
         os.remove(deb_full_path)
 
+    def get_recipe(self, hash_path: str) -> Optional[Dict]:
+        """Reads the recipe.json for a specific package hash."""
+        target_dir = self.full_path(hash_path)
+        recipe_path = os.path.join(target_dir, RECIPE) # recipe.json
+        
+        if not os.path.exists(recipe_path):
+            return None
+            
+        try:
+            with open(recipe_path, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"[Store] Failed to read recipe at {recipe_path}: {e}")
+            return None
         
         
