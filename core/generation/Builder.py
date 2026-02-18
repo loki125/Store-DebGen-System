@@ -6,11 +6,10 @@ from config import *
 from utils import GenManifest, Layer, HealthInfo
 
 class GenerationBuilder:
-    def __init__(self, manifest_dir, store):
-        self.manifest_dir = manifest_dir
+    def __init__(self, store):
         self.store = store
 
-    def initialize_system(self, base_layer_path: str):
+    def initialize_system(self):
         """Creates the first generation if it doesn't exist."""
         
         # Create the environment
@@ -25,40 +24,26 @@ class GenerationBuilder:
         # Create The Generation Foundation
         timestamp = int(time.time())
         
-        gen0 = GenManifest(
+        return GenManifest(
             id=timestamp,
-            gen_number=0,
             prev_id=None,
             roots=["base-os=1.0"],
-            active_layers=[Layer(h=base_layer_path, p=0)], # Base usually has priority 0
-            relations={base_layer_path: {}},
+            active_layers=[], # Base usually has priority 0
+            relations={{}},
             active=True,
             health=HealthInfo(status="healthy", logs="Initial System Creation")
         )
 
-        filename = f"gen_{timestamp}.json"
-        filepath = os.path.join(GEN_ROOT, filename)
-        
-        with open(filepath, "w") as f:
-            f.write(gen0.to_json())
-
-        # Point 'current.json' to Gen 0
-        if os.path.exists(CURRENT_MANIFEST_LINK):
-            os.remove(CURRENT_MANIFEST_LINK)
-        
-        os.symlink(filename, CURRENT_MANIFEST_LINK)
-        print(f"[+] System Ready. Current Gen: {timestamp}")
-
     def get_current_manifest(self) -> GenManifest:
         """Always points to the symlink."""
         if not os.path.exists(CURRENT_MANIFEST_LINK):
-            raise RuntimeError("System not initialized!")
+            return self.initialize_system()
             
         with open(CURRENT_MANIFEST_LINK, "r") as f:
             data = json.load(f)
             return GenManifest.from_dict(data)
 
-    def create_new_gen(self, to_add: List[str] = None, to_rm: List[str] = None):
+    def create_new_gen(self, to_add: List[str] = None, to_rm: List[str] = None) -> Tuple[GenManifest, GenManifest]:
         """
         Main entry point for changing the system state.
         Global Priority Algorithem:
@@ -91,7 +76,6 @@ class GenerationBuilder:
         
         new_gen.prev_id = current.id
         new_gen.id = int(time.time())
-        new_gen.gen_number += 1
         new_gen.active = False
 
         # REMOVE LOGIC
@@ -179,5 +163,5 @@ class GenerationBuilder:
                         # 3. Add to the dependency's global priority
                         dep_layer.p += isolated_p
 
-        return new_gen
+        return current, new_gen
     

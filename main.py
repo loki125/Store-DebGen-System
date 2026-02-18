@@ -15,30 +15,31 @@ from core import *
 
 store = Store(Fetcher())
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="ddls", description="Demo Package Manager CLI")
 
-    subparsers = parser.add_subparsers(dest="command", required=True)
+def build_parser():
+    """
+    Constructs the argparse parser for the ddls tool.
+    """
+    parser = argparse.ArgumentParser(
+        description="ddls package manager CLI",
+        prog="ddls"
+    )
+    
+    # Create sub-commands (info, update, insert)
+    subparsers = parser.add_subparsers(dest='command', required=True, help='Available commands')
 
-    # -------- fetcher --------
-    fetcher_parser = subparsers.add_parser("fetcher", help="Fetcher operations")
-    fetcher_group = fetcher_parser.add_mutually_exclusive_group(required=True)
+    # ddls info *package name*
+    parser_info = subparsers.add_parser('info', help='Get package info')
+    parser_info.add_argument('package_name', type=str, help='Name of the package')
 
-    fetcher_group.add_argument("-i", metavar="PACKAGE", help="Get package info")
-    fetcher_group.add_argument("-d", nargs="+", metavar=("ID", "VERSION"), help="Download by hash or name [version]")
-    fetcher_group.add_argument("-dl", metavar="NAME", help="Download latest version")
+    # ddls update *package name* *version*
+    parser_update = subparsers.add_parser('update', help='Update a package')
+    parser_update.add_argument('package', type=str, help='Name of the package')
+    parser_update.add_argument('version', type=str, help='Version to update to')
 
-    # -------- store --------
-    store_parser = subparsers.add_parser("store", help="Store operations")
-    store_sub = store_parser.add_subparsers(dest="store_cmd", required=True)
-
-    add_parser = store_sub.add_parser("add", help="Add package to store")
-    add_parser.add_argument("path")
-
-    remove_parser = store_sub.add_parser("remove", help="Remove package from store")
-    remove_parser.add_argument("path")
-
-    store_sub.add_parser("rollback", help="Rollback store")
+    # ddls insert *+/-pkg-version
+    parser_insert = subparsers.add_parser('insert', help='Insert or remove packages')
+    parser_insert.add_argument('changes', nargs='+', help='List of changes (e.g. +pkg-1.0 -pkg-0.9)')
 
     return parser
 
@@ -54,29 +55,46 @@ def setup(argv):
     parser = build_parser()
     return parser, parser.parse_args(argv)
 
+def handle_insert_logic(change_args):
+    """
+    Processes the raw list from the insert command.
+    Separates into add/remove lists and resolves hash paths.
+    """
+    to_add = []
+    to_remove = []
 
-def manage_generation(command: str, pkg_path: str):
-    pass
+    args_set = set(change_args)
+    
+    for root, dirs, files in os.walk(STORE_ROOT):
+        for dir_name in dirs:
+            package = dir_name.split("-", 1)[1]
+            full_path = os.path.join(root, dir_name)
 
+            if ('+' + package) in args_set:
+                    to_add.append(full_path)
+            elif ('-' + package) in args_set:
+                    to_remove.append(full_path)
+
+    return to_add, to_remove
 
 def main(argv=None):
     parser, args = setup(argv)
 
-    if args.command == "fetcher":
-        if args.i: #ddls fetcher -i <package>
-            resp = store.fetcher.get(ENDPOINTS["-i"], {"name": args.i})
-            print(json.dumps(resp, indent=4, sort_keys=True) if isinstance(resp, list) \
-                   else resp)
+    if args.command == "info":
+        resp = store.fetcher.get(ENDPOINTS["-i"], {"name": args.i})
+        print(json.dumps(resp, indent=4, sort_keys=True) if isinstance(resp, list) \
+                else resp)
             
-        elif args.d:
-            arg = args.d
-            query : Dict = store.fetcher.get(ENDPOINTS["-ih"], {"hash": arg[0]}) if len(arg) == 1 \
-                else store.fetcher.get(ENDPOINTS["-ih"],{"name" : arg[0], "version" : arg[1]})
+    if args.command == "update":
+        query : Dict = store.fetcher.get(ENDPOINTS["-ih"], {"Package": args.package, "Version" : args.version})
+        print(f"statuse: {store.update(query)}")
 
-            print(f"statuse: {store.update(query)}")
+    elif args.command == "insert":
+        adds, rms = handle_insert_logic(args.changes)
+        gen = GB(store)
+        curr, new = gen.create_new_gen(adds, rms)
 
-    elif args.command == "store":
-        manage_generation(args.store_cmd, args.path)
+        return int(GE(curr, new))
 
     else:
         parser.print_help()

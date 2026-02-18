@@ -8,11 +8,7 @@ logger = logging.getLogger("Executor")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class GenerationExecutor:
-    def __init__(self):
-        # We rely on constants from config.py
-        pass
-
-    def apply(self, new_manifest: GenManifest, current_manifest: GenManifest) -> bool:
+    def __init__(self, new_manifest: GenManifest, current_manifest: GenManifest) -> bool:
         """
         The Master Workflow: Orchestrates the move from one generation to the next.
         """

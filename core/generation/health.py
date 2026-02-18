@@ -7,6 +7,8 @@ class HealthChecker:
         self.conflicts : List[Conflict] = []
         self.script_results = []
         self.warnings = []
+'''
+BASE FOR WHAT I EXPECT
 
     def add_conflicts(self, conflicts_list):
         """Called by GenerationBuilder during the forest creation."""
@@ -45,3 +47,4 @@ class HealthChecker:
                 raise Exception(f"Health Check Failed: Critical system file conflict at {conflict.path}")
 
         print("Health Check Passed: Generation is stable.")
+'''

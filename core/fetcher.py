@@ -57,7 +57,7 @@ class Fetcher:
             if not os.path.exists(save_path):
                 raise FileNotFoundError(f"Save path {save_path} does not exist.")
             
-            with self.session.get(url, params={"store_path" : params}, stream=True, timeout=10) as response:
+            with self.session.get(url, params=params, stream=True, timeout=10) as response:
                 response.raise_for_status()
                 
                 cd = response.headers.get('Content-Disposition', '')
