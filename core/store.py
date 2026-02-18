@@ -32,7 +32,7 @@ class Store:
             return "pkg already exists"
         os.makedirs(os.path.dirname(target_dir), exist_ok=True)
         
-        zip_name = self.fetcher.download_file(target_dir)
+        zip_name = self.fetcher.download_file(save_path=target_dir)
         if zip_name is None:
             return "download failed"
 

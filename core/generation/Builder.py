@@ -27,7 +27,7 @@ class GenerationBuilder:
         return GenManifest(
             id=timestamp,
             prev_id=None,
-            roots=["base-os=1.0"],
+            roots=[],
             active_layers=[], # Base usually has priority 0
             relations={{}},
             active=True,

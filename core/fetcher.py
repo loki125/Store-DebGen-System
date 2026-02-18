@@ -1,5 +1,5 @@
+from email.message import Message
 import requests
-import re
 import json
 from urllib.parse import urljoin
 
@@ -9,16 +9,11 @@ logger = logging.getLogger("Fetcher")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class Fetcher:
-    def __init__(self, store_node_url=STORE_NODE, headers=None):
-        self.base_url = store_node_url
+    def __init__(self, headers=None):
         self.session = requests.Session()
         
         if headers:
             self.session.headers.update(headers)
-
-    def _get_full_url(self, endpoint):
-        """Helper to join the base URL with the endpoint safely."""
-        return urljoin(self.base_url, endpoint)
     
     def get(self, endpoint, params=None) -> Dict :
         """
@@ -42,7 +37,8 @@ class Fetcher:
             raise RuntimeError(response.text) # raise text if response isn't JSON
         
         except requests.RequestException as e:
-            raise RuntimeError("Failed to contact distributor") from e      
+            raise RuntimeError("Failed to contact distributor") from e
+    
     def download_file(self, save_path, endpoint="download_pkg", params=None) -> str | None:
         """
         Downloads a file/stream and saves it to save_path.
@@ -61,8 +57,8 @@ class Fetcher:
                 response.raise_for_status()
                 
                 cd = response.headers.get('Content-Disposition', '')
-                filename_match = re.search(r'filename="(.+)"', cd)
-                filename = filename_match.group(1) if filename_match else None
+                filename = self.get_filename(cd)
+
                 if filename is None:
                     raise Exception("Filename not found in response headers.")
 
@@ -78,3 +74,24 @@ class Fetcher:
             logger.error(f"An error occurred: {e}")
 
         return None
+    
+    @staticmethod 
+    def get_filename(cd_header):
+        msg = Message()
+        msg['Content-Disposition'] = cd_header
+        filename = msg.get_filename()
+
+        if not filename:
+            return None
+        filename = os.path.basename(filename)
+
+        # SECURITY: This prevents hidden control characters or shell injection characters
+        keep_chars = ('.', '_', '-')
+        filename = "".join(c for c in filename if c.isalnum() or c in keep_chars).strip()
+
+        return filename 
+    
+    @staticmethod
+    def _get_full_url(endpoint):
+        """Helper to join the base URL with the endpoint safely."""
+        return urljoin(STORE_NODE, endpoint)
