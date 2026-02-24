@@ -1,15 +1,17 @@
 import os
 from typing import List, Dict, Tuple, Set, Optional
 import logging
+from enum import Enum
 from pathlib import Path
 
 # Fetcher API
-STORE_NODE = "http://192.168.50.4:11080"
-ENDPOINTS = {
-    "-d" : "download_pkg",
-    "-i" : "pkgs_by_name",
-    "-ih" : "pkgs_by_hash"
-}
+STORE_NODE : str = "http://192.168.50.4:11080"
+class ENDPOINTS(Enum):
+    DOWNLOAD = "download_pkg"
+    PKG_INFO  = "pkgs_by_name"
+    PKG_VER_INFO = "pkgs_by_name_version"
+    HASH_INFO = "pkgs_by_hash"
+
 
 # Base Paths
 
@@ -46,13 +48,12 @@ CURRENT_MANIFEST_LINK = GEN_ROOT / "current.json"
 
 
 # Sandbox / OverlayFS Constants
-SYSTEM_DIRS = ["/proc", "/sys", "/dev", "/dev/pts"]
-TEMP_OVERLAY_DIR = "/tmp/sandbox_"
-POLICY_PATH = "usr/sbin/policy-rc.d"
-OVERLAYFS_ENV = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
-POLICY_BLOCKER_SCRIPT = "#!/bin/sh\nexit 101\n" # 101 means 'action not allowed'
-
-SCRIPT_PATH = "var/lib/dpkg/info/postinst"
+SAFE_DEVICES = ["null", "zero", "full", "random", "urandom"] # Safe devices to project from host into the sandbox
+OVERLAYFS_ENV = {
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "DEBIAN_FRONTEND": "noninteractive", # Prevents scripts from hanging
+    "LC_ALL": "C.UTF-8"                   # Prevents encoding errors in scripts
+}
 
 # Health Check Settings
 # Paths that, if conflicted, will cause the transaction to fail immediately

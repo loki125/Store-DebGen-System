@@ -1,8 +1,13 @@
 from email.message import Message
-import requests
 import json
+import urllib.request
+import urllib.parse
+import urllib.error
+import os
+import logging
 from urllib.parse import urljoin
 
+# Assuming config is in the same directory
 from config import *
 
 logger = logging.getLogger("Fetcher")
@@ -10,12 +15,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 class Fetcher:
     def __init__(self, headers=None):
-        self.session = requests.Session()
-        
-        if headers:
-            self.session.headers.update(headers)
+        self.headers = headers if headers else {}
     
-    def get(self, endpoint, params=None) -> Dict :
+    def get(self, endpoint : Enum, params=None) -> Dict:
         """
         Sends a GET request.
         :param endpoint: The API path
@@ -23,23 +25,31 @@ class Fetcher:
         :return: JSON response or raw content
         """
         url = self._get_full_url(endpoint)
-        response = ""
-        try:
-            response = self.session.get(url, params=params)
-            response.raise_for_status() # Raises error for 4xx or 5xx status codes
-
-            return response.json()
         
-        except requests.exceptions.HTTPError as err:
-            raise RuntimeError(f"Distributer Error: {err}")
+        # Manual parameter encoding 
+        if params:
+            query_string = urllib.parse.urlencode(params)
+            url = f"{url}?{query_string}"
+
+        # Create Request object with headers
+        req = urllib.request.Request(url, headers=self.headers)
+        
+        response_text = ""
+        try:
+            with urllib.request.urlopen(req) as response:
+                response_text = response.read().decode('utf-8')
+                return json.loads(response_text)
+        
+        except urllib.error.HTTPError as err:
+            raise RuntimeError(f"Distributer Error: {err.code} {err.reason}")
         
         except json.JSONDecodeError:
-            raise RuntimeError(response.text) # raise text if response isn't JSON
+            raise RuntimeError(response_text) # raise text if response isn't JSON
         
-        except requests.RequestException as e:
+        except urllib.error.URLError as e:
             raise RuntimeError("Failed to contact distributor") from e
     
-    def download_file(self, save_path, endpoint="download_pkg", params=None) -> str | None:
+    def download_file(self, save_path, params=None, endpoint: Enum =ENDPOINTS.DOWNLOAD) -> str | None:
         """
         Downloads a file/stream and saves it to save_path.
         :param params:
@@ -48,13 +58,18 @@ class Fetcher:
         """
         url = self._get_full_url(endpoint)
         
-        # stream=True ensures we don't download the whole file into RAM at once
+        # CHANGED: Manual parameter encoding for the download URL
+        if params:
+            query_string = urllib.parse.urlencode(params)
+            url = f"{url}?{query_string}"
+            
+        req = urllib.request.Request(url, headers=self.headers)
+
         try:
             if not os.path.exists(save_path):
                 raise FileNotFoundError(f"Save path {save_path} does not exist.")
             
-            with self.session.get(url, params=params, stream=True, timeout=10) as response:
-                response.raise_for_status()
+            with urllib.request.urlopen(req, timeout=10) as response:
                 
                 cd = response.headers.get('Content-Disposition', '')
                 filename = self.get_filename(cd)
@@ -63,13 +78,17 @@ class Fetcher:
                     raise Exception("Filename not found in response headers.")
 
                 with open(os.path.join(save_path, filename), 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
+                    while True:
+                        chunk = response.read(8192)
+                        if not chunk:
+                            break
+                        f.write(chunk)
 
             return filename
-        except requests.exceptions.HTTPError as err:
-            logger.error(f"HTTP Error: {err}")
+
+        # HTTPError handling
+        except urllib.error.HTTPError as err:
+            logger.error(f"HTTP Error: {err.code} {err.reason}")
         except Exception as e:
             logger.error(f"An error occurred: {e}")
 
@@ -92,6 +111,6 @@ class Fetcher:
         return filename 
     
     @staticmethod
-    def _get_full_url(endpoint):
+    def _get_full_url(endpoint : Enum):
         """Helper to join the base URL with the endpoint safely."""
-        return urljoin(STORE_NODE, endpoint)
+        return urljoin(STORE_NODE, endpoint.value)

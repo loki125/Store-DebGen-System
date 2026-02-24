@@ -7,7 +7,7 @@ from core.sandbox import SandBox
 
 from .fetcher import Fetcher
 from config import *
-from utils import View
+from .utils import View
 
 logger = logging.getLogger("Store")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -29,12 +29,12 @@ class Store:
         target_dir = self.full_path(store_path)
         
         if os.path.exists(target_dir):
-            return "pkg already exists"
+            raise Exception("pkg already exists")
         os.makedirs(os.path.dirname(target_dir), exist_ok=True)
         
-        zip_name = self.fetcher.download_file(save_path=target_dir)
+        zip_name = self.fetcher.download_file(save_path=target_dir, params=store_path)
         if zip_name is None:
-            return "download failed"
+            raise Exception("download failed")
 
         try:
             os.makedirs(target_dir, exist_ok=False)
@@ -50,7 +50,7 @@ class Store:
                     continue
                 os.makedirs(f_hash_path, exist_ok=False)
                 
-                zip_name = self.fetcher.download_file(f_hash_path) 
+                zip_name = self.fetcher.download_file(save_path=f_hash_path, params=store_path) 
                 if zip_name is None:
                     raise RuntimeError(f"download depend {hash_path} failed")
                 
@@ -59,13 +59,13 @@ class Store:
 
             self._integrate(target_dir)
 
-            return "success"
-
         except Exception as e:
             # Atomic failure: if anything goes wrong, wipe the dir
             if os.path.exists(target_dir):
                 shutil.rmtree(target_dir)
             return f"failed during extraction: {str(e)}"
+        
+        return "success"
         
     def _integrate(self, hash_path : str):
         # read recipe.json, make symlinks and create mount namespace
@@ -93,7 +93,8 @@ class Store:
             # Create a mount namespace and mount the required paths
             with SandBox(mounts, View(hash_path)) as root_fs:
                 logger.info(f"Running postinst script for {recipe.get('package_name')}-{recipe.get('version')} in sandbox...")
-                root_fs.run(["/" + SCRIPT_PATH + "configure"])
+                pkg_name = recipe.get('package_name')
+                root_fs.run(pkg_name, ["configure"])
 
                 root_fs.commit_changes()
 

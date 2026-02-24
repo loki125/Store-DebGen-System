@@ -3,7 +3,7 @@ import os
 import subprocess
 
 from config import *
-from utils import View
+from .utils import View
 
 class SandBox:
     def __init__(self, mounts: List[str], view : View):
@@ -12,107 +12,124 @@ class SandBox:
         self._mounted = []
 
     def __enter__(self):
-        """Sets up the sandbox: dirs, overlay, system mounts, and policy blocker."""
         try:
-            # Create Directories 
             self.view.ensure_dirs()
+            merged = Path(self.view.merged)
 
-            # Mount OverlayFS 
-            for p in self.mounts:
-                if not os.path.isdir(p):
-                    raise RuntimeError(f"Lower dir missing: {p}")
-        
-            lower_str = ":".join(self.mounts)
-            cmd = [
-                "mount", "-t", "overlay", "overlay",
-                "-o", f"lowerdir={lower_str},upperdir={self.view.upper},workdir={self.view.work}",
-                self.view.merged
-            ]
+            # 1. Setup OverlayFS
+            # Order: [Dependencies] : [Global Root]
+            all_layers = [str(p) for p in self.mounts] + [str(BASE_ROOTFS)]
+            lower_str = ":".join(all_layers)
+            overlay_opts = f"lowerdir={lower_str},upperdir={self.view.upper},workdir={self.view.work}"
             
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                raise RuntimeError(f"Failed to mount overlay: {result.stderr}")
-            self._mounted.append(self.view.merged)
+            self._mount("overlay", merged, m_type="overlay", options=overlay_opts)
+
+            # 2. Mount Virtual Filesystems (Kernel Interfaces)
+            # We mount these into the 'merged' view
             
-            # Mount System Directories
-            for sys_dir in SYSTEM_DIRS: 
-                target = self.make_merge_dir(sys_dir)
-                
-                result = subprocess.run(
-                    ["mount", "--bind", sys_dir, target],
-                    capture_output=True,
-                    text=True
-                )
-                
-                if result.returncode != 0:
-                    raise RuntimeError(f"Failed to mount {sys_dir}: {result.stderr}")
+            # /proc
+            self._mount("proc", merged / "proc", m_type="proc")
+            
+            # /sys
+            self._mount("sysfs", merged / "sys", m_type="sysfs")
 
-                self._mounted.append(target)
+            # 3. Setup Isolated /dev
+            # We use a tmpfs so the sandbox has its own empty /dev 
+            # instead of seeing the host's hardware devices.
+            self._mount("tmpfs", merged / "dev", m_type="tmpfs", options="mode=755")
 
-            # prevent services from starting. 
-            self._create_policy_blocker()
+            # 4. Bind-mount ONLY safe character devices from the host
+            for dev in self.SAFE_DEVICES:
+                host_dev = Path("/dev") / dev
+                sandbox_dev = merged / "dev" / dev
+                if host_dev.exists():
+                    sandbox_dev.touch() # Create mount point
+                    self._mount(host_dev, sandbox_dev, options="bind")
+
+            # 5. Setup /dev/pts (Terminal support)
+            (merged / "dev/pts").mkdir(exist_ok=True)
+            self._mount("devpts", merged / "dev/pts", m_type="devpts")
 
             return self
 
         except Exception as e:
-            for m in reversed(self._mounted):
-                subprocess.run(["umount", "-l", m], check=False)
-                
+            self.__exit__(None, None, None)
             raise RuntimeError(f"Sandbox setup failed: {e}")
-        
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Clean up mounts and temp dirs."""
+        """Clean up mounts in reverse order and remove temp workdirs."""
         
-        for sys_dir in reversed(SYSTEM_DIRS):
-            target = os.path.join(self.view.merged, sys_dir.lstrip("/"))
-            # Lazy unmount (-l) is safer for scripts that leave hanging processes
-            subprocess.run(["umount", "-l", target], check=False)
-
-        subprocess.run(["umount", "-l", self.view.merged], check=False)
-
-        # Delete work dir
-        shutil.rmtree(self.view.work, ignore_errors=True)
-
-    def _create_policy_blocker(self):
-        """Creates the 'policy-rc.d' script to stop daemons from starting."""
-        # We write to UPPER so it overlays on top of the package's /usr/sbin
-        policy_path = os.path.join(self.view.upper, POLICY_PATH)
+        # 1. Unmount everything in reverse order
+        # Using lazy unmount (-l) to ensure it detaches even if a process is hanging
+        for target in reversed(self._mounted):
+            subprocess.run(["umount", "-l", str(target)], check=False)
         
-        os.makedirs(os.path.dirname(policy_path), exist_ok=True)
-        
-        with open(policy_path, "w") as f:
-            f.write(POLICY_BLOCKER_SCRIPT) # 101 = Action Forbidden by Policy
-            
-        # Make it executable rwxr-xr-x
-        os.chmod(policy_path, 0o755)
+        self._mounted.clear()
 
-    def make_merge_dir(self, sys_dir):
-        """Helper to create paths inside the merged view."""
-        target = os.path.join(self.view.merged, sys_dir.lstrip("/"))
-        os.makedirs(target, exist_ok=True)
-        return target
+        # 2. Cleanup OverlayFS work directory
+        if os.path.exists(self.view.work):
+            shutil.rmtree(self.view.work, ignore_errors=True)
+
+    def _mount(self, source, target, m_type=None, options=None):
+        """Helper to run mount command and track it for cleanup."""
+        cmd = ["mount"]
+        if m_type:
+            cmd += ["-t", m_type]
+        if options:
+            cmd += ["-o", options]
+        cmd += [str(source), str(target)]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Mount failed: {cmd}\nError: {result.stderr}")
+        
+        # Track the target for reverse unmounting
+        self._mounted.append(target)
     
-    def run(self, command: List[str], env : Dict = OVERLAYFS_ENV):
-        """Runs a command INSIDE the sandbox using chroot."""
+    def run_chroot(self, cmd_list):
+        """Helper to run a command inside the prepared sandbox."""
+        full_cmd = ["chroot", str(self.view.merged)] + cmd_list
+        return subprocess.run(full_cmd, capture_output=True, text=True)
+
+    def run(self, package_name: str, args: List[str] = ["configure"], env: Dict = OVERLAYFS_ENV):
+        """Runs the package's postinst script INSIDE the sandbox."""
         
-        # Chroot requires the full command to be wrapped
-        real_cmd = ["chroot", self.view.merged] + command
+        # 1. Construct the dynamic path to the script
+        # Reminder: the script was extracted into the 'upper' layer 
+        # during the 'unpack' phase before entering the sandbox.
+        script_path = f"/var/lib/dpkg/info/{package_name}.postinst"
+        
+        # 2. Check if the script exists before running
+        # (Some packages don't have a postinst)
+        check_cmd = ["chroot", self.view.merged, "test", "-f", script_path]
+        if subprocess.run(check_cmd).returncode != 0:
+            print(f"[*] No postinst script found for {package_name}, skipping.")
+            return
+
+        # 3. Execute the script
+        real_cmd = ["chroot", self.view.merged, script_path] + args
+        print(f"[*] Executing: {' '.join(real_cmd)}")
         
         return subprocess.run(real_cmd, env=env, check=True)
 
     def commit_changes(self):
-        """Moves generated files from 'upper' to the permanent store."""
-        for root, dirs, files in os.walk(self.view.upper):
-            for name in files:
-                src_file = os.path.join(root, name)
-                
-                # Check if this is the policy blocker (we don't want to save that!)
-                if "policy-rc.d" in src_file:
-                    continue
+        """Merges generated files from 'upper' into the permanent store."""
+        upper_path = Path(self.view.upper)
+        isolated_path = Path(self.view.isolated_path)
 
-                rel_path = os.path.relpath(src_file, self.view.upper)
-                dst_file = os.path.join(self.view.isolated_path, rel_path)
+        if not upper_path.exists():
+            return
 
-                os.makedirs(os.path.dirname(dst_file), exist_ok=True)
-                shutil.move(src_file, dst_file)
+        # Surgical cleanup: Remove policy-rc.d from upper if the package copied it
+        # so we don't accidentally save our dummy shim into the package's permanent data.
+        policy_shim = upper_path / "usr/sbin/policy-rc.d"
+        if policy_shim.exists():
+            policy_shim.unlink()
+
+        # Merge the tree using copytree (dirs_exist_ok=True prevents the overwrite bug)
+        # This safely layers the new .pyc files or configs into the existing unpacked data.
+        shutil.copytree(upper_path, isolated_path, dirs_exist_ok=True)
+
+        # After successfully copying, empty the upper directory so it's clean
+        shutil.rmtree(upper_path)
+        upper_path.mkdir()

@@ -1,7 +1,7 @@
 import subprocess
 
 from config import *
-from Builder import GenManifest
+from .Builder import GenManifest
 
 # Setup logger
 logger = logging.getLogger("Executor")

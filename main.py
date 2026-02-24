@@ -30,7 +30,7 @@ def build_parser():
 
     # ddls info *package name*
     parser_info = subparsers.add_parser('info', help='Get package info')
-    parser_info.add_argument('package_name', type=str, help='Name of the package')
+    parser_info.add_argument('name', type=str, help='Name of the package')
 
     # ddls update *package name* *version*
     parser_update = subparsers.add_parser('update', help='Update a package')
@@ -50,8 +50,8 @@ def setup(argv):
 
     if not os.path.isdir(BASE_ROOTFS):
         os.makedirs(BASE_ROOTFS, exist_ok=False)
-        subprocess.run(["debootstrap", "--variant=minbase", "stable", str(BASE_ROOTFS)], check=True)
-
+        bbrfs(BASE_ROOTFS)
+        
     parser = build_parser()
     return parser, parser.parse_args(argv)
 
@@ -81,12 +81,18 @@ def main(argv=None):
     parser, args = setup(argv)
 
     if args.command == "info":
-        resp = store.fetcher.get(ENDPOINTS["-i"], {"name": args.i})
-        print(json.dumps(resp, indent=4, sort_keys=True) if isinstance(resp, list) \
-                else resp)
+        output = ""
+        try:
+            resp = store.fetcher.get(ENDPOINTS.PKG_INFO, {"name": args.name})
+            output = json.dumps(resp, indent=4, sort_keys=True)
+
+        except Exception as e:
+             output = str(e)
+        
+        print(output)
             
-    if args.command == "update":
-        query : Dict = store.fetcher.get(ENDPOINTS["-ih"], {"Package": args.package, "Version" : args.version})
+    elif args.command == "update":
+        query : Dict = store.fetcher.get(ENDPOINTS.PKG_VER_INFO, {"Package": args.package, "Version" : args.version})
         print(f"statuse: {store.update(query)}")
 
     elif args.command == "insert":

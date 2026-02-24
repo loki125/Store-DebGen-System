@@ -3,7 +3,7 @@ import time
 import shutil
 
 from config import *
-from utils import GenManifest, Layer, HealthInfo
+from ..utils import GenManifest, Layer, HealthInfo
 
 class GenerationBuilder:
     def __init__(self, store):
