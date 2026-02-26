@@ -48,7 +48,18 @@ CURRENT_MANIFEST_LINK = GEN_ROOT / "current.json"
 
 
 # Sandbox / OverlayFS Constants
-SAFE_DEVICES = ["null", "zero", "full", "random", "urandom"] # Safe devices to project from host into the sandbox
+TRANS_ROOT = BASE_DIR / "transient" # Transient area for OverlayFS mechanics
+UPPER_DIR_TEMPLATE = TRANS_ROOT / "upper_{pkg_hash}" # Where the .deb is actually extracted before it is committed to the Store
+WORK_DIR_TEMPLATE = TRANS_ROOT / "work_{pkg_hash}" # The scratchpad required by the kernel for OverlayFS atomic ops
+
+DEVICE_NODES = {
+    "null":   (1, 3),
+    "zero":   (1, 5),
+    "full":   (1, 7),
+    "random": (1, 8),
+    "urandom":(1, 9)
+}
+
 OVERLAYFS_ENV = {
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     "DEBIAN_FRONTEND": "noninteractive", # Prevents scripts from hanging
@@ -64,3 +75,5 @@ CRITICAL_PATHS = [
     "/etc/network/interfaces",
     "/boot"
 ]
+
+

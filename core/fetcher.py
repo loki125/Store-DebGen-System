@@ -49,7 +49,7 @@ class Fetcher:
         except urllib.error.URLError as e:
             raise RuntimeError("Failed to contact distributor") from e
     
-    def download_file(self, save_path, params=None, endpoint: Enum =ENDPOINTS.DOWNLOAD) -> str | None:
+    def download_file(self, save_path, store_path, endpoint: Enum = ENDPOINTS.DOWNLOAD) -> str | None:
         """
         Downloads a file/stream and saves it to save_path.
         :param params:
@@ -58,10 +58,8 @@ class Fetcher:
         """
         url = self._get_full_url(endpoint)
         
-        # CHANGED: Manual parameter encoding for the download URL
-        if params:
-            query_string = urllib.parse.urlencode(params)
-            url = f"{url}?{query_string}"
+        query_string = urllib.parse.urlencode({"Store_path" : store_path})
+        url = f"{url}?{query_string}"
             
         req = urllib.request.Request(url, headers=self.headers)
 

@@ -13,7 +13,7 @@ logger = logging.getLogger("Store")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class Store:
-    def __init__(self, fetcher : Fetcher, root="/opt/my-store"):
+    def __init__(self, fetcher : Fetcher, root=STORE_ROOT):
         self.root = root
         os.makedirs(self.root, exist_ok=True)
 
@@ -32,7 +32,7 @@ class Store:
             raise Exception("pkg already exists")
         os.makedirs(os.path.dirname(target_dir), exist_ok=True)
         
-        zip_name = self.fetcher.download_file(save_path=target_dir, params=store_path)
+        zip_name = self.fetcher.download_file(save_path=target_dir, store_path=store_path)
         if zip_name is None:
             raise Exception("download failed")
 
@@ -50,7 +50,7 @@ class Store:
                     continue
                 os.makedirs(f_hash_path, exist_ok=False)
                 
-                zip_name = self.fetcher.download_file(save_path=f_hash_path, params=store_path) 
+                zip_name = self.fetcher.download_file(save_path=f_hash_path, store_path=store_path) 
                 if zip_name is None:
                     raise RuntimeError(f"download depend {hash_path} failed")
                 

@@ -7,12 +7,12 @@ DDLS (DaeDaLuS) CLI skeleton.
 import argparse
 import sys
 import os
-import subprocess
 import json
 
 from config import *
 from core import *
 
+logging.basicConfig(level=logging.DEBUG)
 store = Store(Fetcher())
 
 
@@ -30,7 +30,7 @@ def build_parser():
 
     # ddls info *package name*
     parser_info = subparsers.add_parser('info', help='Get package info')
-    parser_info.add_argument('name', type=str, help='Name of the package')
+    parser_info.add_argument('package', type=str, help='Name of the package')
 
     # ddls update *package name* *version*
     parser_update = subparsers.add_parser('update', help='Update a package')
@@ -50,7 +50,7 @@ def setup(argv):
 
     if not os.path.isdir(BASE_ROOTFS):
         os.makedirs(BASE_ROOTFS, exist_ok=False)
-        bbrfs(BASE_ROOTFS)
+        Bbrfs(BASE_ROOTFS)
         
     parser = build_parser()
     return parser, parser.parse_args(argv)
@@ -83,7 +83,7 @@ def main(argv=None):
     if args.command == "info":
         output = ""
         try:
-            resp = store.fetcher.get(ENDPOINTS.PKG_INFO, {"name": args.name})
+            resp = store.fetcher.get(ENDPOINTS.PKG_INFO, {"Package": args.package})
             output = json.dumps(resp, indent=4, sort_keys=True)
 
         except Exception as e:
