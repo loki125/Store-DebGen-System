@@ -1,17 +1,17 @@
 import subprocess
 import logging
 import shutil
-from config import *
-
+import os
+from pathlib import Path
         
 logger = logging.getLogger("BOOTSTRAP")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-class Bootstraper:
+class Bootstrapper:
     def __init__(self, target_path : Path):
         self.target_path = target_path
         self.null_device = self.target_path / "dev/null"
-        self.exit_script = "#!/bin/sh\nexit {exist_code}\n"
+        self.exit_script = "#!/bin/sh\nexit {exit_code}\n"
 
         self.dirs = [
             "bin", "sbin", "lib", "lib64", "usr/bin", "usr/sbin", 
@@ -52,8 +52,9 @@ class Bootstraper:
         self.copy_with_libs("/bin/dash")
         self.copy_with_libs("/sbin/ldconfig")
 
-        if os.path.exists("/bin/busybox"):
-            self.copy_with_libs("/bin/busybox")
+        busybox_path = shutil.which("busybox")
+        if busybox_path:
+            self.copy_with_libs(busybox_path)
         
         # Ensure /bin/sh exists as a link to dash
         if not (self.target_path / "bin/sh").exists():
@@ -62,7 +63,7 @@ class Bootstraper:
         for tool in self.tools:
             tool_path = self.target_path / "bin" / tool
             if not tool_path.exists():
-                os.symlink("/bin/busybox", tool_path)
+                os.symlink(busybox_path, tool_path)
 
 
         if not self.null_device.exists():
@@ -79,13 +80,13 @@ class Bootstraper:
             shim_path = self.target_path / shim.lstrip("/")
             shim_path.parent.mkdir(parents=True, exist_ok=True)
             with open(shim_path, "w") as f:
-                f.write(self.exit_script.format(exist_code=0))
+                f.write(self.exit_script.format(exit_code=0))
             shim_path.chmod(0o755)
 
         # policy-rc.d is special: 101 means "Action not allowed" (standard for containers)
         policy_path = self.target_path / "usr/sbin/policy-rc.d"
         with open(policy_path, "w") as f:
-            f.write(self.exit_script.format(exist_code=101))
+            f.write(self.exit_script.format(exit_code=101))
         policy_path.chmod(0o755)
 
         logger.info("Bootstrap complete.")
@@ -107,7 +108,7 @@ class Bootstraper:
             os.symlink(link_target, dest_path)
             
             # We resolve the target's path relative to the host's filesystem
-            target_on_host = (host_path.parent / link_target).resolve()
+            target_on_host = Path(os.path.normpath(host_path.parent / link_target))
             self._smart_copy(target_on_host)
         else:
             # It's a real file, just copy it

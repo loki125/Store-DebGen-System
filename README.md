@@ -14,7 +14,7 @@
 
         What it fools: Hardcoded Relative Paths. By making links relative to the store-hash, you ensure the package is "Relocatable."
 
-    [ ] 4. ELF Interpreter Path Verification
+    [V] 4. ELF Interpreter Path Verification
 
         What it fools: The Kernel Binary Loader.
 
@@ -22,21 +22,21 @@
 
 ## Phase 2: The "Sandboxing" (Mounting & Isolation)
 
-    [ ] 5. Basic FHS "Lower" Mount (The Skeleton)
+    [V] 5. Basic FHS "Lower" Mount (The Skeleton)
 
         What it fools: The Linker’s Default Search Path. It provides /lib, /usr/lib, etc., so the linker doesn't panic when looking for standard C libraries.
 
-    [ ] 6. Virtual Filesystem Projection (/proc, /dev, /sys)
+    [V] 6. Virtual Filesystem Projection (/proc, /dev, /sys)
 
         What it fools: Low-level System Calls.
 
         Detail: Many modern libraries (like Graphics or Networking) fail if they can't read /proc/self. You must bind-mount these from the host into your fake root.
 
-    [ ] 7. OverlayFS Merging (Upper/Lower)
+    [V] 7. OverlayFS Merging (Upper/Lower)
 
         What it fools: The Filesystem Persistence. It allows you to "install" things (Upper) onto a "read-only" store (Lower) to see the final result without modifying the original package.
 
-    [ ] 8. ldconfig Cache Generation
+    [V] 8. ldconfig Cache Generation
 
         What it fools: The Linker’s Search Cache (/etc/ld.so.cache).
 

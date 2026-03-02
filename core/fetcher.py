@@ -1,13 +1,11 @@
 from email.message import Message
 import json
 import urllib.request
-import urllib.parse
+from urllib.parse import urljoin
 import urllib.error
 import os
 import logging
-from urllib.parse import urljoin
 
-# Assuming config is in the same directory
 from config import *
 
 logger = logging.getLogger("Fetcher")

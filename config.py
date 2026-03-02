@@ -49,9 +49,6 @@ CURRENT_MANIFEST_LINK = GEN_ROOT / "current.json"
 
 # Sandbox / OverlayFS Constants
 TRANS_ROOT = BASE_DIR / "transient" # Transient area for OverlayFS mechanics
-UPPER_DIR_TEMPLATE = TRANS_ROOT / "upper_{pkg_hash}" # Where the .deb is actually extracted before it is committed to the Store
-WORK_DIR_TEMPLATE = TRANS_ROOT / "work_{pkg_hash}" # The scratchpad required by the kernel for OverlayFS atomic ops
-
 DEVICE_NODES = {
     "null":   (1, 3),
     "zero":   (1, 5),

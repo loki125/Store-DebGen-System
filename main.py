@@ -50,7 +50,8 @@ def setup(argv):
 
     if not os.path.isdir(BASE_ROOTFS):
         os.makedirs(BASE_ROOTFS, exist_ok=False)
-        Bbrfs(BASE_ROOTFS)
+        setup = Bbrfs(BASE_ROOTFS)
+        setup.run()
         
     parser = build_parser()
     return parser, parser.parse_args(argv)
