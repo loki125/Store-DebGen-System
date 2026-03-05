@@ -32,6 +32,7 @@ STRUCTURE:
 # GLOBAL VAR
 MANAGER : str = "isolated-manager"
 BASE_DIR = Path(os.getenv("IM_BASE", f"/var/lib/{MANAGER}"))
+BASE_ROOTFS_TARBALL = Path(os.getenv("IM_BASE_ROOTFS", "data/base.tar.gz"))
 
 MANIFEST : str =  "manifest.json"
 RECIPE : str = "recipe.json"

@@ -52,7 +52,7 @@ def setup(argv):
     if not os.path.isdir(BASE_ROOTFS):
         try:
             os.makedirs(BASE_ROOTFS, exist_ok=False)
-            Bbrfs(BASE_ROOTFS).run()
+            Bbrfs(BASE_ROOTFS).deploy()
 
         except Exception as e:
             logging.error(f"Error creating directory {BASE_ROOTFS}: {e}")
