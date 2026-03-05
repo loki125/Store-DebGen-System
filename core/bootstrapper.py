@@ -52,18 +52,35 @@ class Bootstrapper:
         self.copy_with_libs("/bin/dash")
         self.copy_with_libs("/sbin/ldconfig")
 
-        busybox_path = shutil.which("busybox")
-        if busybox_path:
-            self.copy_with_libs(busybox_path)
+        # Ensure busybox is copied to /bin/busybox
+        busybox_host_path = shutil.which("busybox")
+        busybox_target_bin = self.target_path / "bin/busybox"
         
-        # Ensure /bin/sh exists as a link to dash
-        if not (self.target_path / "bin/sh").exists():
-            os.symlink("/bin/dash", self.target_path / "bin/sh")
+        if busybox_host_path:
+            self.copy_with_libs(busybox_host_path)
 
+            # Ensure it is at the expected location
+            shutil.copy2(busybox_host_path, busybox_target_bin)
+            busybox_target_bin.chmod(0o755)
+
+        # Ensure /bin/sh exists as a link to dash (or busybox's sh if dash isn't available)
+        sh_link = self.target_path / "bin/sh"
+        if sh_link.exists() or sh_link.is_symlink():
+            os.remove(sh_link)
+        os.symlink("dash", sh_link)
+
+        # Create tool links pointing to 'busybox'
         for tool in self.tools:
             tool_path = self.target_path / "bin" / tool
-            if not tool_path.exists():
-                os.symlink(busybox_path, tool_path)
+            
+            # Force recreate: if it exists, remove it first
+            if tool_path.exists() or tool_path.is_symlink():
+                os.remove(tool_path)
+                
+            # Create link to 'busybox'. 
+            # Because the link is in /bin, and busybox is in /bin,
+            # the target is just "busybox"
+            os.symlink("busybox", tool_path)
 
 
         if not self.null_device.exists():

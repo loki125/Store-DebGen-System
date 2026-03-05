@@ -7,6 +7,7 @@ DDLS (DaeDaLuS) CLI skeleton.
 import argparse
 import sys
 import os
+import shutil
 import json
 
 from config import *
@@ -49,10 +50,15 @@ def setup(argv):
         os.makedirs(path, exist_ok=True)
 
     if not os.path.isdir(BASE_ROOTFS):
-        os.makedirs(BASE_ROOTFS, exist_ok=False)
-        setup = Bbrfs(BASE_ROOTFS)
-        setup.run()
-        
+        try:
+            os.makedirs(BASE_ROOTFS, exist_ok=False)
+            Bbrfs(BASE_ROOTFS).run()
+
+        except Exception as e:
+            logging.error(f"Error creating directory {BASE_ROOTFS}: {e}")
+            shutil.rmtree(BASE_ROOTFS)
+            sys.exit(1)
+
     parser = build_parser()
     return parser, parser.parse_args(argv)
 

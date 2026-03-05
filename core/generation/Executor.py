@@ -58,7 +58,7 @@ class GenerationExecutor:
 
         # Predictable Sort: Priority DESC, then Hash ASC for deterministic mounting
         sorted_layers = sorted(new_manifest.active_layers, key=lambda x: (-x.p, x.h))
-        lower_dirs = ":".join([layer.h for layer in sorted_layers])
+        lower_dirs = ":".join([str(STORE_ROOT / layer.h) for layer in sorted_layers])
 
         logger.info(f"Mounting Gen {new_manifest.id} at {mount_point}")
         
@@ -76,7 +76,7 @@ class GenerationExecutor:
         logger.info(f"Verifying health of {mount_point}")
         
         # Standard essential binaries for a sane Linux environment
-        essential_binaries = ["/bin/sh", "/usr/bin/env"]
+        essential_binaries = ["/bin/sh", "/etc", "/usr/bin"]
         
         for f in essential_binaries:
             if not os.path.exists(mount_point + f):
@@ -113,20 +113,6 @@ class GenerationExecutor:
                 subprocess.run(["chroot", old_mount_point, f"/{prerm_rel_path}"], check=False)
 
     @staticmethod
-    def _atomic_switch(new_mount_point: str):
-        logger.info("Flipping the global symlink...")
-        
-        # Atomic swap using rename (standard Linux behavior)
-        tmp_link = f"{CURRENT_SYSTEM_LINK}.tmp"
-        
-        if os.path.exists(tmp_link):
-            os.remove(tmp_link)
-            
-        os.symlink(new_mount_point, tmp_link)
-        os.rename(tmp_link, CURRENT_SYSTEM_LINK) 
-        logger.info(f"System pointer successfully moved to {new_mount_point}")
-
-    @staticmethod
     def _activate_new_services(pkgs_to_add: Set[str], new_mount_point: str):
         logger.info("Activating new services...")
         
@@ -141,6 +127,21 @@ class GenerationExecutor:
             if os.path.exists(unit_file):
                 logger.info(f"  - Starting new service: {pkg}")
                 subprocess.run(["systemctl", "start", pkg], check=False)
+
+    @staticmethod
+    def _atomic_switch(new_mount_point: str):
+        logger.info("Flipping the global symlink...")
+        
+        # Atomic swap using rename (standard Linux behavior)
+        tmp_link = f"{CURRENT_SYSTEM_LINK}.tmp"
+        
+        if os.path.exists(tmp_link):
+            os.remove(tmp_link)
+            
+        os.symlink(new_mount_point, tmp_link)
+        os.rename(tmp_link, CURRENT_SYSTEM_LINK) 
+        logger.info(f"System pointer successfully moved to {new_mount_point}")
+
 
     @staticmethod
     def _cleanup_old_gen(old_manifest: GenManifest):
