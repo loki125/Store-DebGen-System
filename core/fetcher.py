@@ -8,12 +8,10 @@ import logging
 
 from config import *
 
-logger = logging.getLogger("Fetcher")
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
 class Fetcher:
     def __init__(self, headers=None):
         self.headers = headers if headers else {}
+        self.logger = logging.getLogger(self.__class__.__name__)
     
     def get(self, endpoint : Enum, params=None) -> Dict:
         """
@@ -47,7 +45,7 @@ class Fetcher:
         except urllib.error.URLError as e:
             raise RuntimeError("Failed to contact distributor") from e
     
-    def download_file(self, save_path, store_path, endpoint: Enum = ENDPOINTS.DOWNLOAD) -> str | None:
+    def download_file(self, save_path, store_path, endpoint: Enum = ENDPOINTS.DOWNLOAD) -> Path | None:
         """
         Downloads a file/stream and saves it to save_path.
         :param params:
@@ -73,20 +71,21 @@ class Fetcher:
                 if filename is None:
                     raise Exception("Filename not found in response headers.")
 
-                with open(os.path.join(save_path, filename), 'wb') as f:
+                zip_path = os.path.join(save_path, filename)
+                with open(zip_path, 'wb') as f:
                     while True:
                         chunk = response.read(8192)
                         if not chunk:
                             break
                         f.write(chunk)
 
-            return filename
+            return Path(zip_path)
 
         # HTTPError handling
         except urllib.error.HTTPError as err:
-            logger.error(f"HTTP Error: {err.code} {err.reason}")
+            self.logger.error(f"HTTP Error: {err.code} {err.reason}")
         except Exception as e:
-            logger.error(f"An error occurred: {e}")
+            self.logger.error(f"An error occurred: {e}")
 
         return None
     
