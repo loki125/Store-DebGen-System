@@ -45,23 +45,24 @@ class Fetcher:
         except urllib.error.URLError as e:
             raise RuntimeError("Failed to contact distributor") from e
     
-    def download_file(self, save_path, store_path, endpoint: Enum = ENDPOINTS.DOWNLOAD) -> Path | None:
+    def download_file(self, save_path: Path, relative_store_path: Path, endpoint: Enum = ENDPOINTS.DOWNLOAD) -> Path | None:
         """
         Downloads a file/stream and saves it to save_path.
         :param params:
         :param endpoint: The API path
         :param save_path: Where to save the file
         """
+        save_path_str = str(save_path)
         url = self._get_full_url(endpoint)
         
-        query_string = urllib.parse.urlencode({"Store_path" : store_path})
+        query_string = urllib.parse.urlencode({"Store_path" : str(relative_store_path)})
         url = f"{url}?{query_string}"
             
         req = urllib.request.Request(url, headers=self.headers)
 
         try:
-            if not os.path.exists(save_path):
-                raise FileNotFoundError(f"Save path {save_path} does not exist.")
+            if not os.path.exists(save_path_str):
+                raise FileNotFoundError(f"Save path {save_path_str} does not exist.")
             
             with urllib.request.urlopen(req, timeout=10) as response:
                 
@@ -71,7 +72,7 @@ class Fetcher:
                 if filename is None:
                     raise Exception("Filename not found in response headers.")
 
-                zip_path = os.path.join(save_path, filename)
+                zip_path = os.path.join(save_path_str, filename)
                 with open(zip_path, 'wb') as f:
                     while True:
                         chunk = response.read(8192)

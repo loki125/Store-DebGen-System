@@ -73,26 +73,28 @@ class Store:
                 self._run_sandbox_install(current_store_path, paths)
 
                 # Phase 4: The Freeze (Commitment)
-                self._commit_package(paths.upper, current_store_path)
+                if not self._commit_package(paths.upper, current_store_path):
+                    self.reset_target(Path(current_store_path))
+                    raise Exception(f"commit failed for {current_store_path}, cleaned failed atomic logic")
 
             return True
 
         except Exception as e:
             self.logger.error(f"Failed to install {pkg_name}, cleaning broken package {current_store_path}")
             self.logger.debug(e)
-            self.reset_target(current_store_path)
             return False
         finally:
             self._cleanup_transaction()
 
     def _prepare_ingredients(self, pkg: Dict, paths: TransactionPaths):
         # Download the main zip containing the .deb and recipe
-        main_store_path=pkg["Store_Path"]
+        relative_store_path = Path(pkg["Store_Path"])
+        main_store_path= self.root / relative_store_path
 
         paths.download.mkdir(parents=True, exist_ok=True)
         zip_path = self.fetcher.download_file(
             save_path=paths.download, 
-            store_path=main_store_path
+            relative_store_path=relative_store_path
         )
 
         if zip_path is None:
@@ -126,7 +128,7 @@ class Store:
             
             dep_zip = self.fetcher.download_file(
                 save_path=dep_paths.download, 
-                store_path=relative_dep_path
+                relative_store_path=relative_dep_path
             )
             
             if dep_zip is None:
@@ -151,21 +153,23 @@ class Store:
         return mounting_dict
 
     def _plant_symlink_forest(self, recipes_to_process: Dict[Path, Dict]):
-        for forest_path, recipe in recipes_to_process.items():
-            for src, dst in recipe.get("symlink_forest", {}).items():
-                # link_entry structure: {"jail/path/lib.so" : "/host/store/path/lib.so"}
-                self.logger.debug(f"Creating symlink in forest: {src} -> {dst}")
-
-                link_path = self._src_root_adapter(forest_path / src.lstrip("/"))
-                target_path = Path(dst)
-
-                link_path.parent.mkdir(parents=True, exist_ok=True)
-                if link_path.is_symlink() or link_path.exists():
-                    link_path.unlink()
+        for forest_root, recipe in recipes_to_process.items():
+            for jail_path, store_path in recipe.get("symlink_forest", {}).items():
+                # link_name: The "shortcut" we create in the temporary forest like /transient/forest_tree/lib/x86_64-linux-gnu/libc.so.6
+                link_name = self._src_root_adapter(forest_root / jail_path.lstrip("/"))
                 
-                os.symlink(target_path, link_path)
+                # target_data: The real file sitting in our immutable store like /var/lib/manager/store/hash-libc/lib/x86_64-linux-gnu/libc.so.6
+                target_data = Path(store_path)
 
-    def reset_target(self, target_path):
+                link_name.parent.mkdir(parents=True, exist_ok=True)
+                if link_name.is_symlink() or link_name.exists():
+                    link_name.unlink()
+                
+                # Standard Log format: SHORTCUT -> REAL_FILE
+                self.logger.debug(f"Forest Link: {link_name} -> {target_data}")
+                os.symlink(target_data, link_name)
+
+    def reset_target(self, target_path: Path):
         """
         Safely unmounts all nested mounts inside target_path (deepest first) 
         and deletes the directory tree, handling weird filenames gracefully.
@@ -202,13 +206,7 @@ class Store:
             self.logger.critical(f"cleanup of {target_path} failed, pkg manager is corrupt, please run \"ddls reset\"")
 
     def _src_root_adapter(self, link_path: Path) -> Path:
-        if link_path.parts[0] == "lib":
-            # Check our Base RootFS to see what exists
-            if (self.base_rootfs / "lib64").exists():
-                return Path("lib64") / link_path.relative_to("lib")
-        
-        # If it's already usr/bin or similar, keep it as is
-        return link_path
+        return Path(*["lib64" if part == "lib" else part for part in link_path.parts])
         
     @contextmanager
     def _mount_stack(self, paths: TransactionPaths):
@@ -271,15 +269,21 @@ class Store:
             # 3. Verify the result before committing
             self._run_healthcheck(paths.merged)
 
-    def _commit_package(self, upper_path: Path, store_path: Path):
+    def _commit_package(self, upper_path: Path, store_path: Path) -> bool:
         # Phase 4: The Freeze
         if not any(os.scandir(upper_path)):
             raise RuntimeError("Installation failed: Upper directory is empty")
         store_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Atomic Move
-        shutil.move(str(upper_path), str(store_path))
-        self.logger.info(f"Package committed to store at {store_path}")
+        try:
+            shutil.move(str(upper_path), str(store_path))
+            self.logger.info(f"Package committed to store at {store_path}")
+        except Exception as e:
+            self.logger.debug(e)
+            return False
+        
+        return True
 
     def _extract_deb_to_stage(self, zip_path: Path, stage_path: Path):
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
