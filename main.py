@@ -6,6 +6,7 @@ DDLS (DaeDaLuS) CLI skeleton.
 
 import argparse
 import sys
+import subprocess
 import os
 import shutil
 import json
@@ -13,9 +14,12 @@ import json
 from config import *
 from core import *
 
-logging.basicConfig(level=logging.DEBUG)
+logging.addLevelName(logging.CRITICAL, "\033[91mCRITICAL\033[0m")
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='[%(name)s:%(levelname)s] %(message)s'
+)
 store = Store(Fetcher())
-
 
 def build_parser():
     """
@@ -42,6 +46,9 @@ def build_parser():
     parser_insert = subparsers.add_parser('insert', help='Insert or remove packages')
     parser_insert.add_argument('changes', nargs='+', help='List of changes (e.g. +pkg-1.0 -pkg-0.9)')
 
+    #ddls reset -> nuke pkg_manager
+    subparsers.add_parser('reset', help='perminently deletes all packages and generations.')
+
     return parser
 
 def setup(argv):
@@ -52,11 +59,11 @@ def setup(argv):
     if not os.path.isdir(BASE_ROOTFS):
         try:
             os.makedirs(BASE_ROOTFS, exist_ok=False)
-            Bbrfs(BASE_ROOTFS).run()
+            Bbrfs(BASE_ROOTFS).deploy()
 
         except Exception as e:
             logging.error(f"Error creating directory {BASE_ROOTFS}: {e}")
-            shutil.rmtree(BASE_ROOTFS)
+            store.reset_target(BASE_ROOTFS)
             sys.exit(1)
 
     parser = build_parser()
@@ -86,34 +93,52 @@ def handle_insert_logic(change_args):
 
 def main(argv=None):
     parser, args = setup(argv)
+    try:
+        if args.command == "info":
+            output = ""
+            try:
+                resp = store.fetcher.get(ENDPOINTS.PKG_INFO, {"Package": args.package})
+                output = json.dumps(resp, indent=4, sort_keys=True)
 
-    if args.command == "info":
-        output = ""
-        try:
-            resp = store.fetcher.get(ENDPOINTS.PKG_INFO, {"Package": args.package})
-            output = json.dumps(resp, indent=4, sort_keys=True)
-
-        except Exception as e:
-             output = str(e)
-        
-        print(output)
+            except Exception as e:
+                output = str(e)
             
-    elif args.command == "update":
-        query : Dict = store.fetcher.get(ENDPOINTS.PKG_VER_INFO, {"Package": args.package, "Version" : args.version})
-        print(f"statuse: {store.update(query)}")
+            print(output)
+                
+        elif args.command == "update":
+            query : Dict = store.fetcher.get(ENDPOINTS.PKG_VER_INFO, {"Package": args.package, "Version" : args.version})
+            print(f"statuse: {store.update(query)}")
 
-    elif args.command == "insert":
-        adds, rms = handle_insert_logic(args.changes)
-        gen = GB(store)
-        curr, new = gen.create_new_gen(adds, rms)
+        elif args.command == "insert":
+            adds, rms = handle_insert_logic(args.changes)
+            gen = Gen(store)
+            curr, new = gen.create_manifest(adds, rms)
 
-        return int(GE(curr, new))
+            return int(gen.execute(curr, new))
+        
+        elif args.command == "reset":
+            while True:
+                choice = input("Reset will permanently delete all packages and generations. Are you sure? [y/n] ").strip().lower()
+                
+                if choice == 'y':
+                    store.reset_target(BASE_DIR)
+                    break
+                elif choice == 'n':
+                    print("Operation canceled.")
+                    break
+                
+                print("Invalid input. Please type 'y' for yes or 'n' for no.")
 
-    else:
-        parser.print_help()
+        else:
+            parser.print_help()
+            return 1
+
+    except Exception as e:
+        logging.debug(e)
         return 1
-
+    
     return 0
+
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ class Layer:
 
 @dataclass
 class GenManifest:
-    id: int # Timestamp
+    timestamp_id: int # Timestamp
     prev_id: Optional[int]
     roots: List[str] # ["name=version"]
     active_layers: List[Layer]
