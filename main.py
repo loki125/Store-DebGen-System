@@ -112,7 +112,7 @@ def main(argv=None):
         elif args.command == "insert":
             adds, rms = handle_insert_logic(args.changes)
             gen = Gen(store)
-            curr, new = gen.create_new_gen(adds, rms)
+            curr, new = gen.create_manifest(adds, rms)
 
             return int(gen.execute(curr, new))
         

@@ -2,12 +2,15 @@ import json
 import time
 import shutil
 import subprocess
+from pprint import pformat
 
 from config import *
+from .store import Store
+from .health import Health
 from .utils import GenManifest, Layer, HealthInfo
 
 class Generation:
-    def __init__(self, store):
+    def __init__(self, store : Store):
         self.store = store
         self.logger = logging.getLogger(self.__class__.__name__)
 
@@ -18,6 +21,31 @@ class Generation:
         if not os.path.exists(GEN_ROOT):
             print(f"Initializing DDLS directory at {GEN_ROOT}")
             os.makedirs(GEN_ROOT, exist_ok=True)
+        
+        # Since this modifies system files, it requires root/sudo
+        try:
+            if os.path.exists("/etc/profile.d"):
+                if not os.path.exists(PROFILE_SCRIPT):
+                    self.logger.info(f"Adding DDLS to system environment via {PROFILE_SCRIPT}")
+                    with open(PROFILE_SCRIPT, "w") as f:
+                        f.write("# DDLS Package Manager Environment\n")
+                        f.write(EXPORTS)
+            else:
+                # Fallback: Safely append to /etc/profile directly if profile.d doesn't exist
+                profile_path = "/etc/profile"
+                with open(profile_path, "r") as f:
+                    profile_content = f.read()
+                
+                # Check so we don't append it 100 times if the script runs multiple times
+                if "/var/store/active/bin" not in profile_content:
+                    self.logger.info("Appending DDLS Environment to /etc/profile")
+                    with open(profile_path, "a") as f:
+                        f.write("\n# DDLS Package Manager Environment\n")
+                        f.write(EXPORTS)
+
+        except PermissionError:
+            self.logger.warning("Permission denied: Could not update profiles. Ensure you run this as root!")
+            raise
 
         # Check if we already have a current generation
         if os.path.exists(CURRENT_MANIFEST_LINK):
@@ -27,7 +55,7 @@ class Generation:
         timestamp = int(time.time())
         
         return GenManifest(
-            id=timestamp,
+            timestamp_id=timestamp,
             prev_id=None,
             roots=[],
             active_layers=[], # Base usually has priority 0
@@ -45,7 +73,7 @@ class Generation:
             data = json.load(f)
             return GenManifest.from_dict(data)
 
-    def create_new_gen(self, to_add: List[str] = None, to_rm: List[str] = None) -> Tuple[GenManifest, GenManifest]:
+    def create_manifest(self, to_add: List[str] = None, to_rm: List[str] = None) -> Tuple[GenManifest, GenManifest]:
         """
         Main entry point for changing the system state.
         Global Priority Algorithem:
@@ -76,8 +104,8 @@ class Generation:
         current: GenManifest = self.get_current_manifest()
         new_gen: GenManifest = shutil.copy.deepcopy(current)
         
-        new_gen.prev_id = current.id
-        new_gen.id = int(time.time())
+        new_gen.prev_id = current.timestamp_id
+        new_gen.timestamp_id = int(time.time())
         new_gen.active = False
 
         # REMOVE LOGIC
@@ -167,83 +195,6 @@ class Generation:
 
         return current, new_gen
     
-    def execute(self, new_manifest: GenManifest, current_manifest: GenManifest) -> bool:
-        """
-        The Master Workflow: Orchestrates the move from one generation to the next.
-        """
-        self.logger.info(f"=== STARTING TRANSITION: Gen {current_manifest.id} -> Gen {new_manifest.id} ===")
-        
-        # 1. Mount New (Invisible to user)
-        try:
-            new_path = self._mount_new_gen(new_manifest)
-        except Exception as e:
-            self.logger.error(f"Failed to mount new generation: {e}")
-            return False
-
-        # 2. Verify Health
-        if not self._verify_health(new_path):
-            self.logger.error("New generation is broken. Aborting.")
-            # Cleanup the failed mount
-            subprocess.run(["umount", "-l", new_path])
-            return False
-
-        # 3. Calculate Diff
-        to_remove, to_add = self._calculate_diff(current_manifest, new_manifest)
-        current_path = os.path.join(GEN_MOUNT_BASE, str(current_manifest.id))
-
-        # 4. Shutdown Old (Pre-Flight)
-        self._shutdown_old_services(to_remove, current_path)
-
-        # 5. The Atomic Switch
-        try:
-            self._atomic_switch(new_path)
-        except OSError as e:
-            self.logger.error(f"Atomic switch failed! Error: {e}")
-            return False
-
-        # 6. Activate New (Startup)
-        self._activate_new_services(to_add, new_path)
-
-        # 7. Cleanup Old
-        self._cleanup_old_gen(current_manifest)
-        
-        self.logger.info("=== TRANSITION COMPLETE SUCCESSFULLY ===")
-        return True
-    
-    
-    def _mount_new_gen(self, new_manifest: GenManifest) -> str:
-        mount_point = os.path.join(GEN_MOUNT_BASE, str(new_manifest.id))
-        os.makedirs(mount_point, exist_ok=True)
-
-        # Predictable Sort: Priority DESC, then Hash ASC for deterministic mounting
-        sorted_layers = sorted(new_manifest.active_layers, key=lambda x: (-x.p, x.h))
-        lower_dirs = ":".join([str(STORE_ROOT / layer.h) for layer in sorted_layers])
-
-        self.logger.info(f"Mounting Gen {new_manifest.id} at {mount_point}")
-        
-        # overlayfs mount command
-        cmd = [
-            "mount", "-t", "overlay", "overlay",
-            "-o", f"lowerdir={lower_dirs}",
-            mount_point
-        ]
-        subprocess.run(cmd, check=True)
-        return mount_point
-
-    
-    def _verify_health(self, mount_point: str) -> bool:
-        self.logger.info(f"Verifying health of {mount_point}")
-        
-        # Standard essential binaries for a sane Linux environment
-        essential_binaries = ["/bin/sh", "/etc", "/usr/bin"]
-        
-        for f in essential_binaries:
-            if not os.path.exists(mount_point + f):
-                self.logger.warning(f"Critical file missing in new mount: {f}")
-                return False
-        return True
-    
-    
     def _calculate_diff(self, old_manifest: GenManifest, new_manifest: GenManifest) -> Tuple[Set[str], Set[str]]:
         self.logger.info("Calculating differences...")
         
@@ -253,8 +204,142 @@ class Generation:
 
         return old_pkgs - new_pkgs, new_pkgs - old_pkgs
     
+    def execute(self, new_manifest: GenManifest, current_manifest: GenManifest, overwrite_flag: bool=False) -> bool:
+        """
+        The Master Workflow: Orchestrates the move from one generation to the next.
+        """
+        self.logger.info(f"=== STARTING TRANSITION: Gen {current_manifest.timestamp_id} -> Gen {new_manifest.timestamp_id} ===")
+        healther = Health()
+        succession_flag = True
+        
+        # 1. Create the new gen
+        try:
+            new_path = self._create_new_gen(new_manifest)
+        except Exception as e:
+            self.logger.error(f"Failed to create new generation: {e}")
+            succession_flag = False
+
+        # 2. Verify Health
+        if not healther.gen_health(new_path):
+            self.logger.error(f"New generation is broken. Aborting.\n{pformat(healther.report, indent=4)}")
+            succession_flag = False
+
+        # 3. Calculate Diff
+        to_remove, to_add = self._calculate_diff(current_manifest, new_manifest)
+        current_path = os.path.join(GEN_ROOT, str(current_manifest.timestamp_id))
+
+        # 4. Shutdown Old (Pre-Flight)
+        self._shutdown_services(to_remove, current_path)
+
+        # 5. The Atomic Switch
+        try:
+            self._atomic_switch(new_path)
+        except OSError as e:
+            self.logger.error(f"Atomic switch failed! Error: {e}")
+            succession_flag = False
+
+        # 6. Activate New (Startup)
+        self._activate_services(to_add, new_path)
+
+        # 7. Cleanup Old
+        if overwrite_flag:
+            self.store.reset_target(current_path)
+            
+        if not succession_flag:
+            self.store.reset_target(new_path)
+
+        self.logger.info("=== TRANSITION COMPLETE SUCCESSFULLY ===")
+        return succession_flag
     
-    def _shutdown_old_services(self, pkgs_to_remove: Set[str], old_mount_point: str):
+    def _create_new_gen(self, new_manifest: GenManifest) -> str:
+        gen_path = os.path.join(GEN_ROOT, str(new_manifest.timestamp_id)) # e.g., /var/store/generations/12345
+        gen_bin_dir = os.path.join(gen_path, "bin")
+        gen_lib_dir = os.path.join(gen_path, "lib") 
+        
+        os.makedirs(gen_bin_dir, exist_ok=True)
+        os.makedirs(gen_lib_dir, exist_ok=True)
+        self.logger.info(f"Building Generation Forest at {gen_path}")
+        
+        for layer in new_manifest.active_layers:
+            pkg_store_path = layer.h
+
+            # Handle BIN 
+            pkg_bin_source = os.path.join(pkg_store_path, "user/bin") 
+            if not os.path.exists(pkg_bin_source):
+                continue
+
+            src, dst = self._generate_wrapper_script(pkg_store_path, pkg_bin_source, gen_bin_dir)
+            os.symlink(src, dst)
+
+            # Handle LIB 
+            pkg_lib_source = os.path.join(pkg_store_path, "user/lib")
+            if os.path.exists(pkg_lib_source):
+                for lib_file in os.listdir(pkg_lib_source):
+                    src_path = os.path.join(pkg_lib_source, lib_file)
+                    dst_path = os.path.join(gen_lib_dir, lib_file)
+                    
+                    # If a lower-priority package already put this lib here, remove it
+                    if os.path.exists(dst_path) or os.path.islink(dst_path):
+                        os.remove(dst_path)                        
+                    os.symlink(src_path, dst_path)
+
+        return gen_path
+
+    def _generate_wrapper_script(self, store_path: str, bin_src: str, gen_bin_dir: str) -> Tuple[str, str]:
+        """
+        store_path: the path of the package in the store
+        bin_src: the full path to the executable in the package
+        gen_bin_dir: the bin directory of the generation where the symlink will live
+
+        returns (wrapper_path, symlink_destination_path)
+        """
+        bin_name = os.path.basename(bin_src)
+        pkg_name = os.path.basename(store_path)
+        gen_path = os.path.dirname(gen_bin_dir)
+        
+        # Setup the wrappers output directory
+        wrappers_dir = os.path.join(gen_path, "wrappers")
+        os.makedirs(wrappers_dir, exist_ok=True)
+        
+        wrapper_path = os.path.join(wrappers_dir, f"{pkg_name}_{bin_name}")
+        symlink_dst = os.path.join(gen_bin_dir, bin_name)
+        
+        # Read the literal .sh template
+        with open(PACKAGE_WRAPPER_PATH, "r") as f:
+            script_content = f.read()
+
+        # 2. Inject the variables ("biting" into the template)
+        script_content = script_content.replace("@@PKG_NAME@@", pkg_name)
+        script_content = script_content.replace("@@BIN_NAME@@", bin_name)
+        script_content = script_content.replace("@@FOREST_PATH@@", gen_path)
+        script_content = script_content.replace("@@BIN_SRC@@", bin_src)
+
+        # 3. Write out the customized wrapper script
+        with open(wrapper_path, "w") as f:
+            f.write(script_content)
+            
+        # 4. Make it executable
+        os.chmod(wrapper_path, 0o755)
+        
+        return wrapper_path, symlink_dst
+
+    def _atomic_switch(self, gen_path: str):
+        self.logger.info(f"Flipping the global symlink to {gen_path}...")
+        
+        # 1. Create a temporary symlink
+        temp_link = f"{ACTIVE_LINK}.tmp"
+        if os.path.islink(temp_link) or os.path.exists(temp_link):
+            os.remove(temp_link)
+            
+        os.symlink(gen_path, temp_link)
+        
+        # Atomically move the temp link over the active link
+        # os.rename is guaranteed to be an atomic operation on POSIX systems.
+        os.rename(temp_link, ACTIVE_LINK)
+        
+        self.logger.info(f"Successfully switched active profile to {gen_path}")
+    
+    def _shutdown_services(self, pkgs_to_remove: Set[str], old_mount_point: str):
         self.logger.info("Shutting down old services...")
         
         for pkg in pkgs_to_remove:
@@ -272,7 +357,7 @@ class Generation:
                 subprocess.run(["chroot", old_mount_point, f"/{prerm_rel_path}"], check=False)
 
     
-    def _activate_new_services(self, pkgs_to_add: Set[str], new_mount_point: str):
+    def _activate_services(self, pkgs_to_add: Set[str], new_mount_point: str):
         self.logger.info("Activating new services...")
         
         # Tell systemd to look for new unit files in the updated /system/current
@@ -288,27 +373,3 @@ class Generation:
                 subprocess.run(["systemctl", "start", pkg], check=False)
 
     
-    def _atomic_switch(self, new_mount_point: str):
-        self.logger.info("Flipping the global symlink...")
-        
-        # Atomic swap using rename (standard Linux behavior)
-        tmp_link = f"{CURRENT_SYSTEM_LINK}.tmp"
-        
-        if os.path.exists(tmp_link):
-            os.remove(tmp_link)
-            
-        os.symlink(new_mount_point, tmp_link)
-        os.rename(tmp_link, CURRENT_SYSTEM_LINK) 
-        self.logger.info(f"System pointer successfully moved to {new_mount_point}")
-
-
-    
-    def _cleanup_old_gen(self, old_manifest: GenManifest):
-        if not old_manifest:
-            return
-            
-        old_path = os.path.join(GEN_MOUNT_BASE, str(old_manifest.id))
-        self.logger.info(f"Lazy unmounting old generation at {old_path}")
-        
-        # -l (lazy) unmounts immediately from the tree, cleans up when files close
-        subprocess.run(["umount", "-l", old_path], check=False)

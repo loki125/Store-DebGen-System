@@ -26,26 +26,34 @@ STRUCTURE:
 /run/isolated-manager            ← runtime state
  ├── current → generation link
 
-/mnt/isolated-manager/generation           ← generation mounts
 
 """
 # GLOBAL VAR
 MANAGER : str = "isolated-manager"
 BASE_DIR = Path(os.getenv("IM_BASE", f"/var/lib/{MANAGER}"))
-BASE_ROOTFS_TARBALL = Path(os.getenv("IM_BASE_ROOTFS", "data/base.tar.gz"))
+ACTIVE_LINK = Path(os.getenv("IM_ACTIVE_LINK", f"/var/{MANAGER}/active"))
 
+# DATA VAR
+BASE_ROOTFS_TARBALL = Path(os.getenv("IM_BASE_ROOTFS", "data/base.tar.gz"))
+PACKAGE_WRAPPER_PATH = Path(os.getenv("IM_PKG_WRAPPER", "data/wrapper.sh"))
+
+# STATIC VAR
+PROFILE_SCRIPT = "/etc/profile.d/ddls_env.sh" # Add the active generation to the global system PATH and LD_LIBRARY_PATH
+EXPORTS = (
+    'export PATH="/var/store/active/bin:$PATH"\n'
+    'export LD_LIBRARY_PATH="/var/store/active/lib:$LD_LIBRARY_PATH"\n'
+)
+
+# STATIC FILENAMES
 MANIFEST : str =  "manifest.json"
 RECIPE : str = "recipe.json"
-
+CURRENT : str = "current.json"
 
 # PATHS
 BASE_ROOTFS = BASE_DIR / "base"
 STORE_ROOT = BASE_DIR / os.getenv("IM_STORE", "store")
 GEN_ROOT =  BASE_DIR / os.getenv("IM_GEN", "generations")
-GEN_MOUNT_BASE = Path(f"/mnt/{MANAGER}/generations")
-CURRENT_SYSTEM_LINK = Path(f"/run/{MANAGER}/current")
-CURRENT_MANIFEST_LINK = GEN_ROOT / "current.json"
-
+CURRENT_MANIFEST_LINK = GEN_ROOT / CURRENT
 
 
 # Sandbox / OverlayFS Constants
