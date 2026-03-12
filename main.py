@@ -76,18 +76,23 @@ def handle_insert_logic(change_args):
     """
     to_add = []
     to_remove = []
-
-    args_set = set(change_args)
     
-    for root, dirs, files in os.walk(STORE_ROOT):
-        for dir_name in dirs:
-            package = dir_name.split("-", 1)[1]
-            full_path = os.path.join(root, dir_name)
+    for pkg in change_args:
+        command, striped_pkg = pkg[:INDICATOR_SIZE], pkg[INDICATOR_SIZE:]
+        store_path = store.get_package(striped_pkg)
+        if store_path is None:
+            logging.warning(f"package {pkg} wasnt found in the local store, skipping...")
+            continue
 
-            if ('+' + package) in args_set:
-                    to_add.append(full_path)
-            elif ('-' + package) in args_set:
-                    to_remove.append(full_path)
+        full_path = os.path.join(STORE_ROOT, store_path)
+
+        if command == ADD_INDICATOR:
+            to_add.append(full_path)
+        elif command == RM_INDICATOR:
+            to_remove.append(full_path)
+        else:
+            logging.error(f"commad not supported for pkg {striped_pkg}")
+            raise
 
     return to_add, to_remove
 
@@ -122,6 +127,7 @@ def main(argv=None):
                 
                 if choice == 'y':
                     store.reset_target(BASE_DIR)
+                    os.remove(PROFILE_SCRIPT_PATH)
                     break
                 elif choice == 'n':
                     print("Operation canceled.")
@@ -134,7 +140,7 @@ def main(argv=None):
             return 1
 
     except Exception as e:
-        logging.debug(e)
+        logging.debug(e.with_traceback())
         return 1
     
     return 0

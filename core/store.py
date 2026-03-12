@@ -4,6 +4,7 @@ import json
 import shutil
 import subprocess
 import zipfile
+import struct
 from dataclasses import dataclass
 
 from config import *
@@ -43,10 +44,11 @@ class TransactionPaths:
     download: Path
 
 class Store:
-    def __init__(self, fetcher, root=STORE_ROOT, transient=TRANS_ROOT, base_rootfs=BASE_ROOTFS):
+    def __init__(self, fetcher, root=STORE_ROOT, transient=TRANS_ROOT, base_rootfs=BASE_ROOTFS, pkg_map=PKG_MAP_PATH):
         self.root = Path(root)
         self.transient = Path(transient)
         self.base_rootfs = Path(base_rootfs)
+        self.pkg_map = pkg_map
         self.fetcher = fetcher
 
         self.root.mkdir(parents=True, exist_ok=True)
@@ -54,8 +56,126 @@ class Store:
 
         self.logger = logging.getLogger(self.__class__.__name__)
 
+        self._init_map()
+
+    def _init_map(self):
+        """Creates an empty file filled with null bytes if it doesn't exist."""
+        if not os.path.exists(self.pkg_map):
+            with open(self.pkg_map, "wb") as f:
+                f.write(b'\x00' * (SLOT_COUNT * SLOT_SIZE))
+
+            self.logger.info(f"package map created at: {self.pkg_map}")
+
+    @staticmethod
+    def _hash_djb2(s):
+        """Simple hash function to turn a string into a slot index."""
+        h = 5381
+        for char in s:
+            h = ((h << 5) + h) + ord(char)
+        return h % SLOT_COUNT
+
+    def _save_package_to_map(self, hash_path : Path, pkg_ver : str):
+        if not os.path.exists(self.pkg_map): 
+            return None
+        index = self._hash_djb2(pkg_ver)
+
+        key_bytes = pkg_ver.encode('utf-8')[:KEY_SIZE]
+        val_bytes = str(hash_path).encode('utf-8')[:VALUE_SIZE]
+
+        with open(self.pkg_map, "rb+") as f:
+            attempt = 0
+            first_tombstone_offset = None
+            
+            while attempt < SLOT_COUNT:
+                offset = index * SLOT_SIZE
+                f.seek(offset)
+                data = f.read(SLOT_SIZE)
+                status = data[0]
+                
+                # 1. If we find the exact key, overwrite it
+                existing_key = data[1:1+KEY_SIZE].strip(b'\x00')
+                if status == STATUS_OCCUPIED and existing_key == key_bytes:
+                    f.seek(offset)
+                    f.write(struct.pack(f"B{KEY_SIZE}s{VALUE_SIZE}s", STATUS_OCCUPIED, key_bytes, val_bytes))
+                    return True
+
+                # 2. Keep track of the first 'Deleted' slot we see to reuse it
+                if status == STATUS_DELETED and first_tombstone_offset is None:
+                    first_tombstone_offset = offset
+
+                # 3. If we hit an Empty slot, we can stop and write here
+                if status == STATUS_EMPTY:
+                    target_offset = first_tombstone_offset if first_tombstone_offset is not None else offset
+                    f.seek(target_offset)
+                    f.write(struct.pack(f"B{KEY_SIZE}s{VALUE_SIZE}s", STATUS_OCCUPIED, key_bytes, val_bytes))
+                    return True
+                
+                index = (index + 1) % SLOT_COUNT
+                attempt += 1
+        return False
+
+    def get_package(self, pkg_ver : str):
+        if not os.path.exists(self.pkg_map): 
+            return None
+        index = self._hash_djb2(pkg_ver)
+        key_bytes = pkg_ver.encode('utf-8')[:KEY_SIZE]
+
+        with open(self.pkg_map, "rb") as f:
+            attempt = 0
+            while attempt < SLOT_COUNT:
+                f.seek(index * SLOT_SIZE)
+                data = f.read(SLOT_SIZE)
+                status = data[0]
+
+                if status == STATUS_EMPTY: return None # Stop: Key definitely doesn't exist
+                
+                if status == STATUS_OCCUPIED:
+                    existing_key = data[1:1+KEY_SIZE].strip(b'\x00')
+                    if existing_key == key_bytes:
+                        return data[1+KEY_SIZE:].strip(b'\x00').decode('utf-8')
+
+                index = (index + 1) % SLOT_COUNT
+                attempt += 1
+        return None
+    
+    def _erase_package(self, pkg_path : Path, pkg_ver : str):
+        """Marks a package as DELETED (Tombstone) so the chain isn't broken."""
+        if os.path.exists(pkg_path):
+            shutil.rmtree(pkg_path)
+
+        if not os.path.exists(self.pkg_map): 
+            return False
+        
+        index = self._hash_djb2(pkg_ver)
+        key_bytes = pkg_ver.encode('utf-8')[:KEY_SIZE]
+
+        with open(self.pkg_map, "rb+") as f:
+            attempt = 0
+            while attempt < SLOT_COUNT:
+                offset = index * SLOT_SIZE
+                f.seek(offset)
+                data = f.read(SLOT_SIZE)
+                status = data[0]
+
+                if status == STATUS_EMPTY: return False # Key not found
+                
+                if status == STATUS_OCCUPIED:
+                    existing_key = data[1:1+KEY_SIZE].strip(b'\x00')
+                    if existing_key == key_bytes:
+                        # Found it! Mark as DELETED
+                        f.seek(offset)
+                        f.write(struct.pack("B", STATUS_DELETED)) 
+                        return True
+
+                index = (index + 1) % SLOT_COUNT
+                attempt += 1
+        return False
+
     def update(self, pkg: Dict) -> bool:
         pkg_name = pkg["Package"]
+        pkg_version = pkg["Version"]
+        pkg_map_key = KEY_STR.format(name=pkg_name, version=pkg_version)
+
         store_path = Path(pkg["Store_Path"])
 
         if store_path.exists():
@@ -73,7 +193,7 @@ class Store:
                 self._run_sandbox_install(current_store_path, paths)
 
                 # Phase 4: The Freeze (Commitment)
-                if not self._commit_package(paths.upper, current_store_path):
+                if not self._commit_package(paths.upper, current_store_path, pkg_map_key):
                     self.reset_target(Path(current_store_path))
                     raise Exception(f"commit failed for {current_store_path}, cleaned failed atomic logic")
 
@@ -264,22 +384,33 @@ class Store:
             postinst_rel = "var/lib/dpkg/info/postinst"
             if (paths.merged / postinst_rel).exists():
                 self.logger.info(f"Running postinst for {pkg_name}...")
-                subprocess.run(["chroot", str(paths.merged), f"/{postinst_rel}", "configure"], check=True)
+                result = subprocess.run(
+                    ["chroot", str(paths.merged), f"/{postinst_rel}", "configure"],           
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+                self.logger.debug(f"STDOUT:{result.stdout}\nSTDERR:{result.stderr}")
 
             # 3. Verify the result before committing
             self._run_healthcheck(paths.merged)
 
-    def _commit_package(self, upper_path: Path, store_path: Path) -> bool:
-        # Phase 4: The Freeze
+    def _commit_package(self, upper_path: Path, store_path: Path, pkg_map_key: str) -> bool:
+        # The Freeze
         if not any(os.scandir(upper_path)):
             raise RuntimeError("Installation failed: Upper directory is empty")
         store_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
+        if not self._save_package_to_map(store_path, pkg_map_key):
+            self.logger.error(f"could not save package : {pkg_map_key}")
+            return False
+
         # Atomic Move
         try:
             shutil.move(str(upper_path), str(store_path))
             self.logger.info(f"Package committed to store at {store_path}")
         except Exception as e:
+            self._erase_package(store_path, pkg_map_key)
             self.logger.debug(e)
             return False
         

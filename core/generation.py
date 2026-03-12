@@ -25,9 +25,9 @@ class Generation:
         # Since this modifies system files, it requires root/sudo
         try:
             if os.path.exists("/etc/profile.d"):
-                if not os.path.exists(PROFILE_SCRIPT):
-                    self.logger.info(f"Adding DDLS to system environment via {PROFILE_SCRIPT}")
-                    with open(PROFILE_SCRIPT, "w") as f:
+                if not os.path.exists(PROFILE_SCRIPT_PATH):
+                    self.logger.info(f"Adding DDLS to system environment via {PROFILE_SCRIPT_PATH}")
+                    with open(PROFILE_SCRIPT_PATH, "w") as f:
                         f.write("# DDLS Package Manager Environment\n")
                         f.write(EXPORTS)
             else:
@@ -59,7 +59,7 @@ class Generation:
             prev_id=None,
             roots=[],
             active_layers=[], # Base usually has priority 0
-            relations={{}},
+            relations={},
             active=True,
             health=HealthInfo(status="healthy", logs="Initial System Creation")
         )
@@ -102,7 +102,7 @@ class Generation:
                 
         """
         current: GenManifest = self.get_current_manifest()
-        new_gen: GenManifest = shutil.copy.deepcopy(current)
+        new_gen: GenManifest = current
         
         new_gen.prev_id = current.timestamp_id
         new_gen.timestamp_id = int(time.time())
@@ -210,46 +210,41 @@ class Generation:
         """
         self.logger.info(f"=== STARTING TRANSITION: Gen {current_manifest.timestamp_id} -> Gen {new_manifest.timestamp_id} ===")
         healther = Health()
-        succession_flag = True
+        new_path = None
         
-        # 1. Create the new gen
         try:
+            # 1. Create the new gen
             new_path = self._create_new_gen(new_manifest)
-        except Exception as e:
-            self.logger.error(f"Failed to create new generation: {e}")
-            succession_flag = False
 
-        # 2. Verify Health
-        if not healther.gen_health(new_path):
-            self.logger.error(f"New generation is broken. Aborting.\n{pformat(healther.report, indent=4)}")
-            succession_flag = False
+            # 2. Verify Health
+            if not healther.gen_health(new_path):
+                raise Exception(f"New generation is broken. Aborting.\n{pformat(healther.report, indent=4)}")
 
-        # 3. Calculate Diff
-        to_remove, to_add = self._calculate_diff(current_manifest, new_manifest)
-        current_path = os.path.join(GEN_ROOT, str(current_manifest.timestamp_id))
+            # 3. Calculate Diff
+            to_remove, to_add = self._calculate_diff(current_manifest, new_manifest)
+            current_path = os.path.join(GEN_ROOT, str(current_manifest.timestamp_id))
 
-        # 4. Shutdown Old (Pre-Flight)
-        self._shutdown_services(to_remove, current_path)
-
-        # 5. The Atomic Switch
-        try:
+            # 4. The Atomic Switch
             self._atomic_switch(new_path)
-        except OSError as e:
-            self.logger.error(f"Atomic switch failed! Error: {e}")
-            succession_flag = False
 
-        # 6. Activate New (Startup)
-        self._activate_services(to_add, new_path)
+            # 5. Shutdown Old (Pre-Flight)
+            self._shutdown_services(to_remove, current_path)
 
-        # 7. Cleanup Old
-        if overwrite_flag:
-            self.store.reset_target(current_path)
-            
-        if not succession_flag:
-            self.store.reset_target(new_path)
+            # 6. Activate New (Startup)
+            self._activate_services(to_add, new_path)
 
-        self.logger.info("=== TRANSITION COMPLETE SUCCESSFULLY ===")
-        return succession_flag
+            # 7. Cleanup Old
+            if overwrite_flag:
+                self.store.reset_target(current_path)
+
+            self.logger.info("=== TRANSITION COMPLETE SUCCESSFULLY ===")
+        except Exception as e:
+            if new_path is not None:
+                self.store.reset_target(new_path)
+
+            self.logger.error(f"Failed to create new generation:\n{e}")
+            return False
+        return True
     
     def _create_new_gen(self, new_manifest: GenManifest) -> str:
         gen_path = os.path.join(GEN_ROOT, str(new_manifest.timestamp_id)) # e.g., /var/store/generations/12345
@@ -325,11 +320,23 @@ class Generation:
 
     def _atomic_switch(self, gen_path: str):
         self.logger.info(f"Flipping the global symlink to {gen_path}...")
-        
-        # 1. Create a temporary symlink
+
+        parent_dir = os.path.dirname(ACTIVE_LINK)
+        os.makedirs(parent_dir, exist_ok=True)
+
+        if os.path.exists(ACTIVE_LINK) and os.path.isdir(ACTIVE_LINK) and not os.path.islink(ACTIVE_LINK):
+            self.logger.warning(f"{ACTIVE_LINK} is a directory, not a symlink. Removing it to allow atomic switch.")
+            shutil.rmtree(ACTIVE_LINK)
+
+        # Prepare the temporary symlink
         temp_link = f"{ACTIVE_LINK}.tmp"
+        
+        # Clean up old temp link if it exists (handles both files and directories)
         if os.path.islink(temp_link) or os.path.exists(temp_link):
-            os.remove(temp_link)
+            if os.path.isdir(temp_link) and not os.path.islink(temp_link):
+                shutil.rmtree(temp_link)
+            else:
+                os.remove(temp_link)
             
         os.symlink(gen_path, temp_link)
         

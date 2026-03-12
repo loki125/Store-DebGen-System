@@ -23,7 +23,7 @@ STRUCTURE:
  ├── store/                      ← package file store
  ├── generations/                ← generation manifests + roots
 
-/run/isolated-manager            ← runtime state
+/var/isolated-manager/active         ← runtime state
  ├── current → generation link
 
 
@@ -38,22 +38,41 @@ BASE_ROOTFS_TARBALL = Path(os.getenv("IM_BASE_ROOTFS", "data/base.tar.gz"))
 PACKAGE_WRAPPER_PATH = Path(os.getenv("IM_PKG_WRAPPER", "data/wrapper.sh"))
 
 # STATIC VAR
-PROFILE_SCRIPT = "/etc/profile.d/ddls_env.sh" # Add the active generation to the global system PATH and LD_LIBRARY_PATH
+PROFILE_SCRIPT_PATH = "/etc/profile.d/ddls_env.sh" # Add the active generation to the global system PATH and LD_LIBRARY_PATH
 EXPORTS = (
-    'export PATH="/var/store/active/bin:$PATH"\n'
-    'export LD_LIBRARY_PATH="/var/store/active/lib:$LD_LIBRARY_PATH"\n'
+    f'export PATH="/var/{MANAGER}/active/bin:$PATH"\n'
+    f'export LD_LIBRARY_PATH="/var/{MANAGER}/active/lib:$LD_LIBRARY_PATH"\n'
 )
+ADD_INDICATOR = '+'
+RM_INDICATOR = '-'
+INDICATOR_SIZE = 1
+
+# PACKAGE MAP VAR
+SLOT_COUNT = 1000  # How many packages expected
+
+STATUS_SIZE = 1
+STATUS_EMPTY = 0
+STATUS_OCCUPIED = 1
+STATUS_DELETED = 2
+
+KEY_SIZE = 127
+VALUE_SIZE = 256 # hash(64) + name(64) + version (20) + buffer(106)
+
+SLOT_SIZE = STATUS_SIZE + KEY_SIZE + VALUE_SIZE  # 384 bytes
+KEY_STR = "{name}-{version}"
 
 # STATIC FILENAMES
 MANIFEST : str =  "manifest.json"
 RECIPE : str = "recipe.json"
 CURRENT : str = "current.json"
+PKG_MAP = "packages.dat"
 
 # PATHS
 BASE_ROOTFS = BASE_DIR / "base"
 STORE_ROOT = BASE_DIR / os.getenv("IM_STORE", "store")
 GEN_ROOT =  BASE_DIR / os.getenv("IM_GEN", "generations")
 CURRENT_MANIFEST_LINK = GEN_ROOT / CURRENT
+PKG_MAP_PATH = BASE_DIR / PKG_MAP
 
 
 # Sandbox / OverlayFS Constants
