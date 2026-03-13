@@ -42,6 +42,7 @@ PROFILE_SCRIPT_PATH = "/etc/profile.d/ddls_env.sh" # Add the active generation t
 EXPORTS = (
     f'export PATH="/var/{MANAGER}/active/bin:$PATH"\n'
     f'export LD_LIBRARY_PATH="/var/{MANAGER}/active/lib:$LD_LIBRARY_PATH"\n'
+    f'export LD_LIBRARY_PATH="/var/{MANAGER}/active/lib64:$LD_LIBRARY_PATH"\n'
 )
 ADD_INDICATOR = '+'
 RM_INDICATOR = '-'
@@ -59,20 +60,52 @@ KEY_SIZE = 127
 VALUE_SIZE = 256 # hash(64) + name(64) + version (20) + buffer(106)
 
 SLOT_SIZE = STATUS_SIZE + KEY_SIZE + VALUE_SIZE  # 384 bytes
-KEY_STR = "{name}-{version}"
+KEY_STR = "{name}={version}"
 
 # STATIC FILENAMES
 MANIFEST : str =  "manifest.json"
 RECIPE : str = "recipe.json"
 CURRENT : str = "current.json"
 PKG_MAP = "packages.dat"
+ROOT = "root"
 
 # PATHS
 BASE_ROOTFS = BASE_DIR / "base"
 STORE_ROOT = BASE_DIR / os.getenv("IM_STORE", "store")
-GEN_ROOT =  BASE_DIR / os.getenv("IM_GEN", "generations")
-CURRENT_MANIFEST_LINK = GEN_ROOT / CURRENT
+GEN_DIR =  BASE_DIR / os.getenv("IM_GEN", "generations")
+SHARED_RUN = BASE_DIR / "shared_run" 
+CURRENT_LINK = BASE_DIR / CURRENT
 PKG_MAP_PATH = BASE_DIR / PKG_MAP
+
+# generation paths
+class GenPath:
+    @staticmethod
+    def base(gen_id: int | str) -> Path:
+        return GEN_DIR / str(gen_id)
+
+    @staticmethod
+    def root(gen_id: int | str) -> Path:
+        return GenPath.base(gen_id) / ROOT
+
+    @staticmethod
+    def root_bin(gen_id: int | str) -> Path:
+        return GenPath.base(gen_id) / ROOT / "bin"
+
+    @staticmethod
+    def root_lib(gen_id: int | str) -> Path:
+        return GenPath.base(gen_id) / ROOT / "lib"
+
+    @staticmethod
+    def root_lib64(gen_id: int | str) -> Path:
+        return GenPath.base(gen_id) / ROOT / "lib64"
+
+    @staticmethod
+    def manifest(gen_id: int | str) -> Path:
+        return GenPath.base(gen_id) / MANIFEST
+    
+BIN_PATHS = ["usr/bin", "bin", "usr/sbin", "sbin"]
+LIB_PATHS = ["usr/lib", "lib"]
+LIB64_PATHS = ["usr/lib64", "lib64"]
 
 
 # Sandbox / OverlayFS Constants

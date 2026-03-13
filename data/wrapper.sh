@@ -1,22 +1,41 @@
 #!/bin/sh
-# Generation Wrapper for @@PKG_NAME@@
-# Target Binary: @@BIN_NAME@@
+# Generation Wrapper for {pkg_name}
+# Target Binary: {bin_name}
+
+# 1. Grab info on the host before we enter the bubble
+REAL_USER=$(id -un)
+REAL_HOME="/home/$REAL_USER"
 
 exec unshare --mount --pid --fork --map-root-user sh -c '
     forest="$1"
-    shift
-    app="$1"
-    shift
+    app="$2"
+    u_name="$3"
+    u_home="$4"
     
-    # 1. Prepare the Forest Root
+    # Prepare the Forest Root
     mount --bind "$forest" "$forest"
     
-    # 2. Mount System Virtual Filesystems
+    # Mount System Virtual Filesystems
     mount -t proc proc "$forest/proc"
     mount --rbind /dev "$forest/dev"
     mount --rbind /sys "$forest/sys"
+    
+    # Mount the Bridges
+    mount --rbind /home "$forest/home"
+    mount --rbind /tmp "$forest/tmp"
+    mount --bind {shared_path} "$forest/run"
+    
+    # DNS Bridge
+    if [ -f /etc/resolv.conf ]; then
+        touch "$forest/etc/resolv.conf"
+        mount --bind /etc/resolv.conf "$forest/etc/resolv.conf"
+    fi
 
-    # 3. Enter the jail and execute the app
-    # We use exec so the app takes over the PID
+    # Identity & Environment Setup
+    export USER="$u_name"
+    export HOME="$u_home"
+    export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+    # Enter the jail and execute the app
     exec chroot "$forest" "$app" "$@"
-' -- "@@FOREST_PATH@@" "@@BIN_SRC@@" "$@"
+' -- "{gen_path}" "{bin_src}" "$REAL_USER" "$REAL_HOME" "$@"

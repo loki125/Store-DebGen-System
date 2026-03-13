@@ -96,7 +96,7 @@ class Store:
                 existing_key = data[1:1+KEY_SIZE].strip(b'\x00')
                 if status == STATUS_OCCUPIED and existing_key == key_bytes:
                     f.seek(offset)
-                    f.write(struct.pack(f"B{KEY_SIZE}s{VALUE_SIZE}s", STATUS_OCCUPIED, key_bytes, val_bytes))
+                    f.write(struct.pack(f"<B{KEY_SIZE}s{VALUE_SIZE}s", STATUS_OCCUPIED, key_bytes, val_bytes))
                     return True
 
                 # 2. Keep track of the first 'Deleted' slot we see to reuse it
@@ -107,7 +107,7 @@ class Store:
                 if status == STATUS_EMPTY:
                     target_offset = first_tombstone_offset if first_tombstone_offset is not None else offset
                     f.seek(target_offset)
-                    f.write(struct.pack(f"B{KEY_SIZE}s{VALUE_SIZE}s", STATUS_OCCUPIED, key_bytes, val_bytes))
+                    f.write(struct.pack(f"<B{KEY_SIZE}s{VALUE_SIZE}s", STATUS_OCCUPIED, key_bytes, val_bytes))
                     return True
                 
                 index = (index + 1) % SLOT_COUNT
@@ -173,9 +173,6 @@ class Store:
 
     def update(self, pkg: Dict) -> bool:
         pkg_name = pkg["Package"]
-        pkg_version = pkg["Version"]
-        pkg_map_key = KEY_STR.format(name=pkg_name, version=pkg_version)
-
         store_path = Path(pkg["Store_Path"])
 
         if store_path.exists():
@@ -186,10 +183,10 @@ class Store:
         current_store_path = ""
         try:
             # Phase 1: Preparation (The Ingredients)
-            mounting_dict = self._prepare_ingredients(pkg, main_paths)
+            mounting_list = self._prepare_ingredients(pkg, main_paths)
 
             # Phase 2 & 3: Building the Site and Live Installation
-            for current_store_path, paths in mounting_dict.items():
+            for current_store_path, pkg_map_key, paths  in mounting_list:
                 self._run_sandbox_install(current_store_path, paths)
 
                 # Phase 4: The Freeze (Commitment)
@@ -201,7 +198,7 @@ class Store:
 
         except Exception as e:
             self.logger.error(f"Failed to install {pkg_name}, cleaning broken package {current_store_path}")
-            self.logger.debug(e)
+            self.logger.exception(e)
             return False
         finally:
             self._cleanup_transaction()
@@ -224,7 +221,7 @@ class Store:
         paths.stage.mkdir(parents=True, exist_ok=True)
         self._extract_deb_to_stage(zip_path, paths.stage)
 
-        main_recipe: Dict = self._get_recipe(paths.stage)
+        main_recipe: Dict = self.get_recipe(paths.stage)
         mount_instructions: Dict = main_recipe.get("mount_instructions", {})
         required_mounts = mount_instructions.get("required_mounts", [])
 
@@ -232,7 +229,7 @@ class Store:
         
         # We will collect recipes in order: Dependencies first, Main Package last
         recipes_to_process: Dict[Path, Dict] = {}
-        mounting_dict: Dict[str, TransactionPaths] = {}
+        mounting_list: List[List[str, str, TransactionPaths]] = []
 
         # Iterate flatend & recursive mounts (Integrate dependencies one by one)
         for relative_dep_path in required_mounts:
@@ -258,25 +255,34 @@ class Store:
             self._extract_deb_to_stage(dep_zip, dep_paths.stage)
 
             # Get the dependency's recipe so we can process its symlinks
-            dep_recipe = self._get_recipe(dep_paths.stage)
+            dep_recipe = self.get_recipe(dep_paths.stage)
 
             recipes_to_process[dep_paths.forest] = dep_recipe
-            mounting_dict[dep_store_path] = dep_paths
+            mounting_list.append([
+                dep_store_path, 
+                KEY_STR.format(name=dep_recipe["package_name"], version=dep_recipe["version"]), 
+                dep_paths]
+            )
 
         self.logger.info(f"Starting symlink forest planting for {pkg['Package']} with {len(recipes_to_process)} dependencies...")
 
         # Append the main package recipe last and process all symlink instructions
         recipes_to_process[paths.forest] = main_recipe
-        mounting_dict[main_store_path] = paths
+        mounting_list.append([
+            main_store_path, 
+            KEY_STR.format(name=main_recipe["package_name"], version=main_recipe["version"]), 
+            paths]
+        )
+
         self._plant_symlink_forest(recipes_to_process)
 
-        return mounting_dict
+        return mounting_list
 
     def _plant_symlink_forest(self, recipes_to_process: Dict[Path, Dict]):
         for forest_root, recipe in recipes_to_process.items():
             for jail_path, store_path in recipe.get("symlink_forest", {}).items():
                 # link_name: The "shortcut" we create in the temporary forest like /transient/forest_tree/lib/x86_64-linux-gnu/libc.so.6
-                link_name = self._src_root_adapter(forest_root / jail_path.lstrip("/"))
+                link_name = forest_root / jail_path.lstrip("/")
                 
                 # target_data: The real file sitting in our immutable store like /var/lib/manager/store/hash-libc/lib/x86_64-linux-gnu/libc.so.6
                 target_data = Path(store_path)
@@ -411,7 +417,7 @@ class Store:
             self.logger.info(f"Package committed to store at {store_path}")
         except Exception as e:
             self._erase_package(store_path, pkg_map_key)
-            self.logger.debug(e)
+            self.logger.exception(e)
             return False
         
         return True
@@ -453,8 +459,8 @@ class Store:
 
         return tx
 
-    def _get_recipe(self, stage_path: Path) -> Dict:
-        recipe_path = stage_path / "recipe.json"
+    def get_recipe(self, stage_path: Path) -> Dict:
+        recipe_path = stage_path / RECIPE
         if not recipe_path.exists():
             return {}
         with open(recipe_path, "r") as f:

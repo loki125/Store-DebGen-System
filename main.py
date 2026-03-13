@@ -53,7 +53,7 @@ def build_parser():
 
 def setup(argv):
     # Create directories if they don't exist
-    for path in [BASE_DIR, STORE_ROOT, GEN_ROOT]:
+    for path in [BASE_DIR, STORE_ROOT, GEN_DIR, BASE_DIR]:
         os.makedirs(path, exist_ok=True)
 
     if not os.path.isdir(BASE_ROOTFS):
@@ -81,7 +81,7 @@ def handle_insert_logic(change_args):
         command, striped_pkg = pkg[:INDICATOR_SIZE], pkg[INDICATOR_SIZE:]
         store_path = store.get_package(striped_pkg)
         if store_path is None:
-            logging.warning(f"package {pkg} wasnt found in the local store, skipping...")
+            logging.warning(f"package {striped_pkg} wasnt found in the local store, skipping...")
             continue
 
         full_path = os.path.join(STORE_ROOT, store_path)
@@ -93,7 +93,7 @@ def handle_insert_logic(change_args):
         else:
             logging.error(f"commad not supported for pkg {striped_pkg}")
             raise
-
+    
     return to_add, to_remove
 
 def main(argv=None):
@@ -116,6 +116,10 @@ def main(argv=None):
 
         elif args.command == "insert":
             adds, rms = handle_insert_logic(args.changes)
+            if not adds and not rms:
+                logging.warning("no package found for args, canceling gen creation")
+                return 1
+            
             gen = Gen(store)
             curr, new = gen.create_manifest(adds, rms)
 
@@ -140,7 +144,7 @@ def main(argv=None):
             return 1
 
     except Exception as e:
-        logging.debug(e.with_traceback())
+        logging.exception(e)
         return 1
     
     return 0
