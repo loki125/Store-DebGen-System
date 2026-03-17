@@ -56,4 +56,3 @@
 
     [ ] 11. Environment Variable Injection (LD_LIBRARY_PATH)
 
-        What it fools: The Linker’s Search Priority. As a "last resort," this ensures your isolated store-paths are checked before the system’s global paths.

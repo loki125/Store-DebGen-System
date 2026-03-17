@@ -53,7 +53,7 @@ def build_parser():
 
 def setup(argv):
     # Create directories if they don't exist
-    for path in [BASE_DIR, STORE_ROOT, GEN_DIR, BASE_DIR]:
+    for path in [BASE_DIR, STORE_ROOT, GEN_DIR, SHARED_RUN, WRAPPER_DIR, SYS_PKGS]:
         os.makedirs(path, exist_ok=True)
 
     if not os.path.isdir(BASE_ROOTFS):
@@ -79,6 +79,10 @@ def handle_insert_logic(change_args):
     
     for pkg in change_args:
         command, striped_pkg = pkg[:INDICATOR_SIZE], pkg[INDICATOR_SIZE:]
+        if not (command == ADD_INDICATOR or command == RM_INDICATOR):
+            logging.warning(f"command for {pkg} was invalide make sure you put\n\"+\" for addtion or \"-\" for removing before the package")
+            continue
+
         store_path = store.get_package(striped_pkg)
         if store_path is None:
             logging.warning(f"package {striped_pkg} wasnt found in the local store, skipping...")
@@ -117,11 +121,29 @@ def main(argv=None):
         elif args.command == "insert":
             adds, rms = handle_insert_logic(args.changes)
             if not adds and not rms:
-                logging.warning("no package found for args, canceling gen creation")
+                logging.warning("No packages found for args, canceling generation creation.")
                 return 1
             
             gen = Gen(store)
             curr, new = gen.create_manifest(adds, rms)
+
+            if gen.system_upgrade_needed(new.pending_rootfs_upgrades):
+                print("Warning: The new generation requires an update to your system packages.")
+                choice = input("Would you like to continue? [y/N]: ").lower()
+                
+                if choice != 'y':
+                    print("Upgrade aborted by user.")
+                    return 1
+                
+                # Nested confirmation for system impact
+                print("\nIMPORTANT: This will close all processes running from the current generation.")
+                confirm = input("To proceed, type 'continue': ").strip().lower()
+                
+                if confirm != "continue":
+                    print("Operation aborted.")
+                    return 1
+                
+                gen.upgrade_system(new)
 
             return int(gen.execute(curr, new))
         
@@ -131,7 +153,8 @@ def main(argv=None):
                 
                 if choice == 'y':
                     store.reset_target(BASE_DIR)
-                    os.remove(PROFILE_SCRIPT_PATH)
+                    if PROFILE_SCRIPT_PATH.exists():
+                        os.remove(PROFILE_SCRIPT_PATH)
                     break
                 elif choice == 'n':
                     print("Operation canceled.")

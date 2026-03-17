@@ -1,6 +1,4 @@
 #!/bin/sh
-# Generation Wrapper for {pkg_name}
-# Target Binary: {bin_name}
 
 # 1. Grab info on the host before we enter the bubble
 REAL_USER=$(id -un)
@@ -38,4 +36,4 @@ exec unshare --mount --pid --fork --map-root-user sh -c '
 
     # Enter the jail and execute the app
     exec chroot "$forest" "$app" "$@"
-' -- "{gen_path}" "{bin_src}" "$REAL_USER" "$REAL_HOME" "$@"
+' -- "{store_path}" "{bin_src}" "$REAL_USER" "$REAL_HOME" "$@"

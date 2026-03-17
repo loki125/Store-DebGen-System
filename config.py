@@ -1,5 +1,5 @@
 import os
-from typing import List, Dict, Tuple, Set, Optional
+from typing import List, Dict, Tuple, Set, Optional, Any
 import logging
 from enum import Enum
 from pathlib import Path
@@ -47,6 +47,41 @@ EXPORTS = (
 ADD_INDICATOR = '+'
 RM_INDICATOR = '-'
 INDICATOR_SIZE = 1
+HASH_LENGTH = 64
+
+# System Binaries
+DPKG_CMD = "dpkg"
+DPKG_QUERY_CMD = "dpkg-query"
+DPKG_DEB_CMD = "dpkg-deb"
+
+# Bootstrapper environment patching
+SHIM_PATHS =[
+    "/usr/sbin/invoke-rc.d", 
+    "/usr/sbin/update-rc.d", 
+    "/usr/bin/systemctl"
+]
+POLICY_RC_D_PATH = "/usr/sbin/policy-rc.d"
+
+# Internal Rootfs Paths
+TMP_DIR_REL = "tmp"
+
+# Paths inside the chroot environment
+DPKG_POSTINST_PATH = "var/lib/dpkg/info/postinst"
+DPKG_INFO_PATH = "var/lib/dpkg/info"
+USR_BIN_PATH = "usr/bin"
+LDCONFIG_PATH = "/sbin/ldconfig"
+
+# Environment Modification Paths
+PROFILE_D_DIR = Path("/etc/profile.d")
+PROFILE_SCRIPT_PATH = PROFILE_D_DIR / "ddls.sh"
+SYS_PROFILE_PATH = Path("/etc/profile")
+
+# Strings expected in the profile FHS setup
+ACTIVE_BIN_EXPORT_STR = "/var/store/active/bin"
+ETC_PROFILE_COMMENT = "# DDLS Package Manager Environment\n"
+
+# Daemons
+INIT_D_REL_PATH = Path("etc/init.d")
 
 # PACKAGE MAP VAR
 SLOT_COUNT = 1000  # How many packages expected
@@ -71,8 +106,11 @@ ROOT = "root"
 
 # PATHS
 BASE_ROOTFS = BASE_DIR / "base"
+WRAPPER_DIR = BASE_DIR / "wrappers"
 STORE_ROOT = BASE_DIR / os.getenv("IM_STORE", "store")
+STORE_TMP_ROOT = STORE_ROOT / ".tmp"
 GEN_DIR =  BASE_DIR / os.getenv("IM_GEN", "generations")
+SYS_PKGS = BASE_DIR / "system_packages"
 SHARED_RUN = BASE_DIR / "shared_run" 
 CURRENT_LINK = BASE_DIR / CURRENT
 PKG_MAP_PATH = BASE_DIR / PKG_MAP
