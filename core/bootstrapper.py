@@ -16,11 +16,40 @@ class Bootstrapper:
 
         self.logger = logging.getLogger(self.__class__.__name__)
 
+    def _stitch_tarball(self) -> None:
+        """Finds split parts and stitches them back into a single tarball."""
+        # Find all parts like 'base_rootfs.tar.gz.part_aa', '...part_ab', etc.
+        # sorted() ensures they are stitched in the exact correct order (aa, ab, ac...)
+        parts = sorted(self.rootfs_tarball.parent.glob(f"{self.rootfs_tarball.name}.part_*"))
+        
+        if not parts:
+            raise FileNotFoundError(f"Cannot find {self.rootfs_tarball} or any of its split parts!")
+
+        self.logger.info(f"Stitching {len(parts)} parts to reconstruct {self.rootfs_tarball.name}...")
+        
+        # Open the target file in write-binary mode
+        with open(self.rootfs_tarball, 'wb') as outfile:
+            for part in parts:
+                self.logger.debug(f"Appending {part.name}...")
+                with open(part, 'rb') as infile:
+                    # shutil.copyfileobj is memory-efficient; it streams the data in chunks
+                    # rather than loading the whole 50MB part into RAM at once.
+                    shutil.copyfileobj(infile, outfile)
+                    
+        self.logger.info("Tarball successfully reconstructed.")
+
     def deploy(self) -> None:
+        # 1. Check if the full tarball exists. If not, try to stitch it from parts.
+        if not self.rootfs_tarball.exists():
+            self._stitch_tarball()
+
+        # 2. Prepare the target directory
         if self.target_path.exists():
             shutil.rmtree(self.target_path)
         self.target_path.mkdir(parents=True)
         
+        # 3. Extract the reconstructed tarball
+        self.logger.info(f"Extracting {self.rootfs_tarball.name}...")
         with tarfile.open(self.rootfs_tarball, "r:gz") as tar:
             tar.extractall(path=self.target_path)
 
@@ -29,9 +58,11 @@ class Bootstrapper:
 
     def patch_environment(self) -> None:
         """Apply runtime shims and ensure /dev/null exists."""
-        # Ensure /dev/null
+        
+        # Ensure /dev/null (Fixed logic so it doesn't crash if debootstrap already made it)
         null_device = self.target_path / "dev/null"
         if not null_device.exists():
+            self.logger.debug("Creating /dev/null node...")
             subprocess.run(["mknod", "-m", "666", str(null_device), "c", "1", "3"], check=True)
 
         # Apply shims (systemctl, etc.)
