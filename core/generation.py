@@ -6,6 +6,9 @@ import copy
 import time
 from operator import attrgetter
 from pprint import pformat
+from typing import Optional, List, Tuple, Dict, Set
+from pathlib import Path
+import logging
 
 from config import *
 from .store import Store
@@ -19,7 +22,6 @@ class Generation:
 
     def initialize_system(self) -> Optional[GenManifest]:
         """Creates the first generation if it doesn't exist."""
-        
         if not GEN_DIR.exists():
             self.logger.info(f"Initializing DDLS directory at {GEN_DIR}")
             GEN_DIR.mkdir(parents=True, exist_ok=True)
@@ -53,7 +55,6 @@ class Generation:
         
         return GenManifest(
             prev_id=None,
-            roots=[],
             active_layers=[], 
             relations={},
             active=True,
@@ -85,7 +86,6 @@ class Generation:
         new_gen: GenManifest = copy.deepcopy(current)
         
         new_gen.prev_id = current.timestamp_id
-        new_gen.pending_rootfs_upgrades =[]
         new_gen.active = False
 
         # REMOVE LOGIC
@@ -106,7 +106,7 @@ class Generation:
                             if dep_layer.p <= 0:
                                 remove_queue.append(dep_hash)
 
-                new_gen.active_layers =[l for l in new_gen.active_layers if l.h != target_hash]
+                new_gen.active_layers = [l for l in new_gen.active_layers if l.h != target_hash]
                 if target_hash in new_gen.relations:
                     del new_gen.relations[target_hash]
 
@@ -134,20 +134,10 @@ class Generation:
                 if not mounts:
                     continue
 
-                required_mounts: List[str] = reversed(mounts.get("required_mounts",[]))
+                # Iterate required_mounts exactly as provided (Topological Order)
+                required_mounts: List[str] = mounts.get("required_mounts", [])
                 
                 for isolated_p, dep_hash in enumerate(required_mounts):
-                    full_system_path = SYS_PKGS / dep_hash
-                    if full_system_path.exists():
-                        deb_files = list(full_system_path.glob("*.deb"))
-                        if deb_files:
-                            deb_path = deb_files[0]         
-                            if self.store.bootstrapper.is_system_deb_newer(deb_path):                                
-                                new_gen.pending_rootfs_upgrades.append(str(deb_path))
-                                continue  
-                        else:
-                            self.logger.warning(f"System package directory exists but contains no .deb: {full_system_path}")
-
                     dep_layer = next((l for l in new_gen.active_layers if l.h == dep_hash), None)
                     
                     if not dep_layer:
@@ -167,27 +157,6 @@ class Generation:
         old_pkgs = set(old_manifest.active_layers)
         new_pkgs = set(new_manifest.active_layers)
         return old_pkgs - new_pkgs, new_pkgs - old_pkgs
-    
-    def system_upgrade_needed(self, sys_deb_paths: List[str]) -> bool:
-        for deb_path in sys_deb_paths:
-            if self.store.bootstrapper.is_system_deb_newer(Path(deb_path)):
-              return True
-        return False
-
-    def upgrade_system(self, new_manifest: GenManifest, curr_manifest: GenManifest):
-        sys_deb_paths: List[str] = new_manifest.pending_rootfs_upgrades.copy()
-        
-        for deb_path in list(sys_deb_paths):  # Iterate over a copy to safely remove items
-            if not self.store.bootstrapper.is_system_deb_newer(Path(deb_path)):
-                sys_deb_paths.remove(deb_path)
-
-        layers_set = set(curr_manifest.active_layers)
-        self._shutdown_processes(layers_set)
-
-        for deb_path in sys_deb_paths:
-            self.store.bootstrapper.upgrade_system_lib(Path(deb_path))
-
-        self._activate_processes(layers_set, Path(GenPath.root_bin(new_manifest.timestamp_id)))
 
     def execute(self, new_manifest: GenManifest, current_manifest: GenManifest, overwrite_flag: bool = False) -> bool:
         self.logger.info(f"=== STARTING TRANSITION: Gen {current_manifest.timestamp_id} -> Gen {new_manifest.timestamp_id} ===")
@@ -195,9 +164,6 @@ class Generation:
         new_path = None
         
         try:
-            if self.system_upgrade_needed(new_manifest.pending_rootfs_upgrades):
-                return False
-            
             new_path = self._create_new_gen(new_manifest)
 
             if not healther.gen_health(new_path):
@@ -247,6 +213,7 @@ class Generation:
         for layer in sorted_layers:
             pkg_store_path = STORE_ROOT / layer.h
 
+            # If it's a system package without a wrapper, this safely ignores it.
             self._link_wrappers_to_bin(layer.h, gen_bin_dir)
 
             for lib_path in LIB_PATHS:
@@ -283,7 +250,6 @@ class Generation:
             for lib_file in pkg_lib_source.iterdir():
                 dst_path = gen_lib_dir / lib_file.name
                 
-                # If it exists, unlink it safely (handles directories safely via rmtree if needed)
                 if dst_path.exists() or dst_path.is_symlink():
                     if dst_path.is_dir() and not dst_path.is_symlink():
                         shutil.rmtree(dst_path)
@@ -299,7 +265,6 @@ class Generation:
 
         ACTIVE_LINK.parent.mkdir(parents=True, exist_ok=True)
 
-        # Safety Check: ACTIVE_LINK must be a symlink, not a real folder.
         if ACTIVE_LINK.exists() and ACTIVE_LINK.is_dir() and not ACTIVE_LINK.is_symlink():
             self.logger.warning(f"{ACTIVE_LINK} is a directory, not a symlink. Removing it to allow atomic switch.")
             shutil.rmtree(ACTIVE_LINK)
@@ -315,7 +280,6 @@ class Generation:
         os.symlink(gen_root_path, temp_link)
         self._switch_current_manifest(manifest)
         
-        # Atomic rename
         os.rename(temp_link, ACTIVE_LINK)
         self.logger.info(f"Successfully switched active profile to {gen_path}")
     
@@ -354,7 +318,7 @@ class Generation:
                 continue
 
             for service_script in init_dir.iterdir():
-                if service_script.name in["README", "skeleton", "functions"]:
+                if service_script.name in ["README", "skeleton", "functions"]:
                     continue
 
                 wrapper_path = gen_bin_dir / service_script.name

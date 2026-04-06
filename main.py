@@ -48,12 +48,14 @@ def build_parser():
 
     #ddls reset -> nuke pkg_manager
     subparsers.add_parser('reset', help='perminently deletes all packages and generations.')
-
+    
+        #ddls reset -> nuke pkg_manager
+    subparsers.add_parser('start', help='runs only the setup fase.')
     return parser
 
 def setup(argv):
     # Create directories if they don't exist
-    for path in [BASE_DIR, STORE_ROOT, GEN_DIR, SHARED_RUN, WRAPPER_DIR, SYS_PKGS]:
+    for path in [BASE_DIR, STORE_ROOT, GEN_DIR, SHARED_RUN, WRAPPER_DIR]:
         os.makedirs(path, exist_ok=True)
 
     if not os.path.isdir(BASE_ROOTFS):
@@ -103,6 +105,9 @@ def handle_insert_logic(change_args):
 def main(argv=None):
     parser, args = setup(argv)
     try:
+        if args.command == "start":
+            return 0
+        
         if args.command == "info":
             output = ""
             try:
@@ -143,7 +148,9 @@ def main(argv=None):
                     print("Operation aborted.")
                     return 1
                 
-                gen.upgrade_system(new)
+                if not gen.upgrade_system(curr, new):
+                    logging.error("system upgrade failed, aborting generation...")
+                    return 1
 
             return int(gen.execute(curr, new))
         

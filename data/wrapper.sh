@@ -9,9 +9,11 @@ exec unshare --mount --pid --fork --map-root-user sh -c '
     app="$2"
     u_name="$3"
     u_home="$4"
+    shift 4
     
-    # Prepare the Forest Root
-    mount --bind "$forest" "$forest"
+    # Mount overlayfs to dynamically stack the forest, system packages, and base rootfs
+    # We can safely mount this right on top of the forest directory because unshare isolates it!
+    mount -t overlay overlay -o lowerdir="{lower_dirs}" "$forest"
     
     # Mount System Virtual Filesystems
     mount -t proc proc "$forest/proc"

@@ -22,7 +22,6 @@ class Layer:
 class GenManifest:
     timestamp_id: str = field(init=False) # Timestamp
     prev_id: Optional[int]
-    pending_rootfs_upgrades: List[str] # [KEY_STR]
     active_layers: List[Layer]
     relations: Dict[str, Dict[str, int]] #{hash_path : {hash_path : isolated_priority number} }
     active: bool = False
@@ -44,17 +43,20 @@ class GenManifest:
 
 @dataclass
 class WrapperConfig:
-    store_path : str
-    bin_src : str
-    shared_path : str = field(init=False)
+    store_path: str
+    bin_src: str
+    lower_dirs: str 
+    shared_path: str = field(init=False)
 
     def __post_init__(self):
-        self.shared_path = SHARED_RUN
+        # Cast to str just in case SHARED_RUN is a Path object
+        self.shared_path = str(SHARED_RUN)
 
     def to_dict(self):
         return {
             "store_path": self.store_path,
             "bin_src": self.bin_src,
+            "lower_dirs": self.lower_dirs, 
             "shared_path": self.shared_path
         }
 

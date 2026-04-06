@@ -110,7 +110,6 @@ WRAPPER_DIR = BASE_DIR / "wrappers"
 STORE_ROOT = BASE_DIR / os.getenv("IM_STORE", "store")
 STORE_TMP_ROOT = STORE_ROOT / ".tmp"
 GEN_DIR =  BASE_DIR / os.getenv("IM_GEN", "generations")
-SYS_PKGS = BASE_DIR / "system_packages"
 SHARED_RUN = BASE_DIR / "shared_run" 
 CURRENT_LINK = BASE_DIR / CURRENT
 PKG_MAP_PATH = BASE_DIR / PKG_MAP
