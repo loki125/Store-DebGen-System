@@ -11,7 +11,6 @@ from pathlib import Path
 import logging
 
 from .utils import TransactionPaths, WrapperConfig
-from .bootstrapper import Bootstrapper as Bbrfs
 from config import *
 
 class Store:
@@ -22,7 +21,6 @@ class Store:
         self.pkg_map = Path(pkg_map)
         self.fetcher = fetcher
 
-        self.bootstrapper = Bbrfs(target_path=self.base_rootfs)
         self.logger = logging.getLogger(self.__class__.__name__)
 
         with open(PACKAGE_WRAPPER_PATH, "r") as f:
@@ -143,11 +141,11 @@ class Store:
             return True
 
         with self._transaction_lock():
-            paths = self._get_transaction_paths(rel_path.name)
+            paths = self._get_transaction_paths(sys_pkg_path)
             try:
                 # Step 1: Download and Extract
-                zip_path = self.fetcher.download_file(save_path=paths.download, relative_store_path=rel_path)
-                if not zip_path: raise Exception(f"Download failed for {rel_path}")
+                zip_path = self.fetcher.download_file(save_path=paths.download, relative_store_path=sys_pkg_path)
+                if not zip_path: raise Exception(f"Download failed for {sys_pkg_path}")
                 
                 deb_paths = self._extract_zip_to_stage(zip_path, paths.stage)
                 recipe = self.get_recipe(paths.stage)
@@ -182,6 +180,7 @@ class Store:
             self._active_tx_paths = []
             self._created_wrappers.clear()
             main_paths = self._get_transaction_paths(store_path.name)
+            current_store_path = None
             
             try:
                 # 1. Prepare layers (Finds system paths and regular deps)
@@ -394,7 +393,6 @@ class Store:
                 subprocess.run(["umount", "-l", str(target)], check=False)
 
     def _upgrade_system_libs(self, merged_path: Path, pkg_name: str, deb_paths: List[Path]):
-        """Moved from Bootstrapper: Executes native system bundle upgrade inside the chroot."""
         tmp_dir_in_root = merged_path / "tmp"
         tmp_dir_in_root.mkdir(parents=True, exist_ok=True)
         

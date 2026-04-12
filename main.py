@@ -131,13 +131,11 @@ def main(argv=None):
                     print("Update aborted by user.")
                     return 1
 
-                sys_query : Dict = store.fetcher.get(ENDPOINTS.HASH_INFO, {"Store": args.package, "Version" : args.version})
                 if not store.update_sys(req_sys):
                     logging.error("system update failed, aborting update...")
                     return 1
 
-
-            print(f"statuse: {store.update(query)}")
+            return int(store.update(query))
 
         elif args.command == "insert":
             adds, rms = handle_insert_logic(args.changes)
