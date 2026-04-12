@@ -121,6 +121,22 @@ def main(argv=None):
                 
         elif args.command == "update":
             query : Dict = store.fetcher.get(ENDPOINTS.PKG_VER_INFO, {"Package": args.package, "Version" : args.version})
+            req_sys = ["mount_instructions"]["required_system_package"]
+            if req_sys and not os.exists(STORE_ROOT / req_sys):
+
+                print("Warning: The new generation requires a system packages.")
+                choice = input("Would you like to continue? [y/N]: ").lower()
+                
+                if choice != 'y':
+                    print("Update aborted by user.")
+                    return 1
+
+                sys_query : Dict = store.fetcher.get(ENDPOINTS.HASH_INFO, {"Store": args.package, "Version" : args.version})
+                if not store.update_sys(req_sys):
+                    logging.error("system update failed, aborting update...")
+                    return 1
+
+
             print(f"statuse: {store.update(query)}")
 
         elif args.command == "insert":
@@ -131,26 +147,6 @@ def main(argv=None):
             
             gen = Gen(store)
             curr, new = gen.create_manifest(adds, rms)
-
-            if gen.system_upgrade_needed(new.pending_rootfs_upgrades):
-                print("Warning: The new generation requires an update to your system packages.")
-                choice = input("Would you like to continue? [y/N]: ").lower()
-                
-                if choice != 'y':
-                    print("Upgrade aborted by user.")
-                    return 1
-                
-                # Nested confirmation for system impact
-                print("\nIMPORTANT: This will close all processes running from the current generation.")
-                confirm = input("To proceed, type 'continue': ").strip().lower()
-                
-                if confirm != "continue":
-                    print("Operation aborted.")
-                    return 1
-                
-                if not gen.upgrade_system(curr, new):
-                    logging.error("system upgrade failed, aborting generation...")
-                    return 1
 
             return int(gen.execute(curr, new))
         

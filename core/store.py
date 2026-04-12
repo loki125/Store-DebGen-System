@@ -134,7 +134,44 @@ class Store:
                 attempt += 1
         return False
 
+    def update_sys(self, sys_pkg_path: Path) -> bool:
+        """Dedicated flow to install System Bundles (Base Layers) into the store."""
+        store_path = self.root / sys_pkg_path
+
+        if store_path.exists():
+            self.logger.info(f"System package {sys_pkg_path} already exists.")
+            return True
+
+        with self._transaction_lock():
+            paths = self._get_transaction_paths(rel_path.name)
+            try:
+                # Step 1: Download and Extract
+                zip_path = self.fetcher.download_file(save_path=paths.download, relative_store_path=rel_path)
+                if not zip_path: raise Exception(f"Download failed for {rel_path}")
+                
+                deb_paths = self._extract_zip_to_stage(zip_path, paths.stage)
+                recipe = self.get_recipe(paths.stage)
+                map_key = KEY_STR.format(name=recipe["package_name"], version=recipe["version"])
+
+                # Step 2: Sandbox Installation (Native dpkg)
+                with self._mount_stack(paths, sys_pkg_lowers=[]):
+                    self.logger.info(f"Installing system bundle {sys_pkg_path} via dpkg...")
+                    self._upgrade_system_libs(paths.merged, sys_pkg_path, deb_paths)
+
+                # Step 3: Atomic Commit to Store
+                if not self._commit_package(paths.upper, store_path, map_key):
+                    raise Exception(f"Commit failed for {sys_pkg_path}")
+
+                return True
+            except Exception as e:
+                self.logger.error(f"System update failed: {e}")
+                self.reset_target(store_path)
+                return False
+            finally:
+                self._cleanup_transaction()
+
     def update(self, pkg: Dict[str, Any]) -> bool:
+        """Regular package update. Expects system dependencies to already exist in store."""
         pkg_name = pkg["Package"]
         store_path = self.root / Path(pkg["Store_Path"])
 
@@ -144,21 +181,19 @@ class Store:
         with self._transaction_lock():
             self._active_tx_paths = []
             self._created_wrappers.clear()
-            current_store_path = ""
             main_paths = self._get_transaction_paths(store_path.name)
             
             try:
-                # Phase 1: Preparation
+                # 1. Prepare layers (Finds system paths and regular deps)
                 mounting_list, sys_pkg_lowers = self._prepare_ingredients(pkg, main_paths)
 
-                # Phase 2 & 3: Building the Site and Live Installation
-                for current_store_path, pkg_map_key, paths, current_pkg_name, is_sys, deb_paths in mounting_list:
-                    
-                    self._run_sandbox_install(current_pkg_name, paths, is_sys, deb_paths, sys_pkg_lowers)
+                # 2. Install packages in topological order
+                for current_store_path, map_key, paths, name, deb_paths in mounting_list:
+                    self._run_sandbox_install(name, paths, deb_paths, sys_pkg_lowers)
 
-                    # Phase 4: The Freeze (Commitment)
-                    if not self._commit_package(paths.upper, Path(current_store_path), pkg_map_key):
-                        raise Exception(f"Commit failed for {current_store_path}, atomic logic aborted.")
+                    # 3. Freeze the result into the store
+                    if not self._commit_package(paths.upper, Path(current_store_path), map_key):
+                        raise Exception(f"Atomic commit failed for {name}")
 
                     self._created_wrappers.discard(str(WRAPPER_DIR / current_store_path.name))
 
@@ -185,10 +220,12 @@ class Store:
     def _prepare_ingredients(self, pkg: Dict[str, Any], paths: TransactionPaths) -> Tuple[List[Tuple], List[Path]]:
         relative_store_path = Path(pkg["Store_Path"])
         
+        # Initialize lists to be populated
         sys_pkg_lowers: List[Path] = []
         recipes_to_process: Dict[Path, Dict[str, Any]] = {}
         mounting_list: List[Tuple] = []
 
+        # HELPER 1: Fetches and unpacks recipe
         def _fetch_and_get_recipe(rel_path: Path, t_paths: TransactionPaths) -> Tuple[List[Path], Dict[str, Any]]:
             t_paths.download.mkdir(parents=True, exist_ok=True)
             t_paths.stage.mkdir(parents=True, exist_ok=True)
@@ -202,57 +239,54 @@ class Store:
             recipe = self.get_recipe(t_paths.stage)
             return deb_paths, recipe
 
+        # HELPER 2: integrates the packages we fetched
         def _integrate(rel_path: Path, t_paths: TransactionPaths, deb_paths: List[Path], recipe: Dict[str, Any]):
             pkg_name = recipe["package_name"]
             version = recipe["version"]
-            is_sys = self.bootstrapper.is_system_pkg(pkg_name=pkg_name)
             map_key = KEY_STR.format(name=pkg_name, version=version)
 
-            if is_sys:
-                self.logger.info(f"Identified {pkg_name} as a System Package Bundle.")
-                t_paths.upper.mkdir(parents=True, exist_ok=True)
-                with open(t_paths.upper / RECIPE, "w") as f:
-                    json.dump(recipe, f)
+            for deb_path in deb_paths:
+                self._extract_deb_to_stage(deb_path, t_paths.stage)
+            
+            recipes_to_process[t_paths.forest] = recipe
+            mounting_list.append((self.root / rel_path, map_key, t_paths, pkg_name, []))
+            
+            self._create_wrapper(rel_path, recipe.get("provider_map", []), sys_pkg_lowers)
 
-                sys_pkg_lowers.append(self.root / rel_path)
-                mounting_list.append((self.root / rel_path, map_key, t_paths, pkg_name, True, deb_paths))
-            else:
-                for deb_path in deb_paths:
-                    self._extract_deb_to_stage(deb_path, t_paths.stage)
-                
-                recipes_to_process[t_paths.forest] = recipe
-                mounting_list.append((self.root / rel_path, map_key, t_paths, pkg_name, False, []))
-                
-                # Pass sys_pkg_lowers down to wrapper generation
-                self._create_wrapper(rel_path, recipe.get("provider_map", []), sys_pkg_lowers)
-
-        # 1. Fetch main package first to read recipe
+        # 1. Fetch main package first to read its recipe
         main_deb_path, main_recipe = _fetch_and_get_recipe(relative_store_path, paths)
 
-        # 2. Process dependencies IN TOPOLOGICAL ORDER
+        # 2. Resolve system package layers beforehand.
+        sys_reqs = main_recipe.get("mount_instructions", {}).get("required_system_package", [])
+        if isinstance(sys_reqs, str): sys_reqs = [sys_reqs]
+        
+        for sys_rel_path in sys_reqs:
+            sys_path = self.root / Path(sys_rel_path)
+            if sys_path.exists():
+                if sys_path not in sys_pkg_lowers:
+                    sys_pkg_lowers.append(sys_path)
+            else:
+                # Fail fast if a required system package is not in the store.
+                raise FileNotFoundError(f"System requirement '{sys_rel_path}' not found. Please run update_sys for it first.")
+
+        # 3. Process regular dependencies IN TOPOLOGICAL ORDER
         required_mounts = main_recipe.get("mount_instructions", {}).get("required_mounts", [])
         
-        for rel_dep_path in required_mounts:
-            rel_dep_path = Path(rel_dep_path)
-            dep_paths = self._get_transaction_paths(rel_dep_path.name)
+        for rel_dep_path_str in required_mounts:
+            rel_dep_path = Path(rel_dep_path_str)
             store_target = self.root / rel_dep_path
             
             if store_target.exists():
-                recipe_path = store_target / RECIPE
-                if recipe_path.exists():
-                    with open(recipe_path, "r") as f:
-                        dep_recipe = json.load(f)
-                    if self.bootstrapper.is_system_pkg(dep_recipe.get("package_name", "")):
-                        if store_target not in sys_pkg_lowers:
-                            sys_pkg_lowers.append(store_target)
                 continue
                 
+            dep_paths = self._get_transaction_paths(rel_dep_path.name)
             dep_deb_path, dep_recipe = _fetch_and_get_recipe(rel_dep_path, dep_paths)
             _integrate(rel_dep_path, dep_paths, dep_deb_path, dep_recipe)
 
-        # 3. Process the main package LAST
+        # 4. Process the main package LAST
         _integrate(relative_store_path, paths, main_deb_path, main_recipe)
 
+        # 5. Create the symlink forest 
         if recipes_to_process:
             self._plant_symlink_forest(recipes_to_process)
             
@@ -383,24 +417,20 @@ class Store:
             if deb_file.exists():
                 deb_file.unlink()
 
-    def _run_sandbox_install(self, pkg_name: str, paths: TransactionPaths, is_sys_pkg: bool, deb_paths: List[Path], sys_pkg_lowers: List[Path]):
+    def _run_sandbox_install(self, pkg_name: str, paths: TransactionPaths, deb_paths: List[Path], sys_pkg_lowers: List[Path]):
+        """Installs a regular package into the overlay stack."""
         with self._mount_stack(paths, sys_pkg_lowers):
-            if is_sys_pkg:
-                self.logger.info(f"System package detected. Executing native dpkg install for {pkg_name}...")
-                # Function natively resides in the Store now
-                self._upgrade_system_libs(paths.merged, pkg_name, deb_paths)
-            else:
-                subprocess.run(["cp", "-a", f"{paths.stage}/.", str(paths.merged)], check=True)
-                subprocess.run(["chroot", str(paths.merged), LDCONFIG_PATH, "-X"], check=True)
+            # 1. Copy staged files into the merged view
+            subprocess.run(["cp", "-a", f"{paths.stage}/.", str(paths.merged)], check=True)
+            
+            # 2. Update shared library cache
+            subprocess.run(["chroot", str(paths.merged), LDCONFIG_PATH, "-X"], check=True)
 
-                postinst_rel = DPKG_POSTINST_PATH
-                if (paths.merged / postinst_rel).exists():
-                    self.logger.info(f"Running postinst for {pkg_name}...")
-                    result = subprocess.run(["chroot", str(paths.merged), f"/{postinst_rel}", "configure"],           
-                        check=True,
-                        capture_output=True,
-                        text=True
-                    )
+            # 3. Run the debian post-installation script if it exists
+            postinst_rel = DPKG_POSTINST_PATH
+            if (paths.merged / postinst_rel).exists():
+                self.logger.info(f"Running postinst for {pkg_name}...")
+                subprocess.run(["chroot", str(paths.merged), f"/{postinst_rel}", "configure"], check=True)
 
     def _commit_package(self, upper_path: Path, store_path: Path, pkg_map_key: str) -> bool:
         if not any(os.scandir(upper_path)):
