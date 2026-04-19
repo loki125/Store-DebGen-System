@@ -1,5 +1,6 @@
 import os
 import json
+import pprint
 import shutil
 import subprocess
 import zipfile
@@ -48,18 +49,7 @@ class Store:
             h = ((h << 5) + h) + ord(char)
         return h % SLOT_COUNT
 
-    @contextmanager
-    def _transaction_lock(self):
-        lock_path = self.transient / ".update.lock"
-        self.transient.mkdir(parents=True, exist_ok=True)
-        
-        with open(lock_path, 'w') as lock_file:
-            self.logger.info("Acquiring transaction lock (waiting if busy)...")
-            fcntl.flock(lock_file, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock_file, fcntl.LOCK_UN)
+
 
     def _save_package_to_map(self, hash_path: Path, pkg_ver: str) -> bool:
         if not self.pkg_map.exists(): return False
@@ -132,6 +122,22 @@ class Store:
                 attempt += 1
         return False
 
+    def _umount_tree(self, path: Path):
+        """Force unmount all mounts under a given path."""
+        try:
+            subprocess.run(
+                ["umount", "-R", str(path)],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except subprocess.CalledProcessError:
+            # fallback to lazy unmount if something is still busy
+            subprocess.run(
+                ["umount", "-l", "-R", str(path)],
+                check=False,
+            )
+
     def update_sys(self, sys_pkg_path: Path) -> bool:
         """Dedicated flow to install System Bundles (Base Layers) into the store."""
         store_path = self.root / sys_pkg_path
@@ -156,7 +162,10 @@ class Store:
                     self.logger.info(f"Installing system bundle {sys_pkg_path} via dpkg...")
                     self._upgrade_system_libs(paths.merged, sys_pkg_path, deb_paths)
 
-                # Step 3: Atomic Commit to Store
+                # Step 3: lazy unmount the system package to be used as lower 
+                self._umount_tree(paths.merged)
+
+                # Step 4: Atomic Commit to Store
                 if not self._commit_package(paths.upper, store_path, map_key):
                     raise Exception(f"Commit failed for {sys_pkg_path}")
 
@@ -254,9 +263,10 @@ class Store:
 
         # 1. Fetch main package first to read its recipe
         main_deb_path, main_recipe = _fetch_and_get_recipe(relative_store_path, paths)
+        pprint.pprint(main_recipe)
 
         # 2. Resolve system package layers beforehand.
-        sys_reqs = main_recipe.get("mount_instructions", {}).get("required_system_package", [])
+        sys_reqs = main_recipe.get("mount_instructions", {}).get("system_mounts", [])
         if isinstance(sys_reqs, str): sys_reqs = [sys_reqs]
         
         for sys_rel_path in sys_reqs:
@@ -266,7 +276,7 @@ class Store:
                     sys_pkg_lowers.append(sys_path)
             else:
                 # Fail fast if a required system package is not in the store.
-                raise FileNotFoundError(f"System requirement '{sys_rel_path}' not found. Please run update_sys for it first.")
+                raise FileNotFoundError(f"System requirement not found. Please run 'ddls system {sys_rel_path}' for it first.")
 
         # 3. Process regular dependencies IN TOPOLOGICAL ORDER
         required_mounts = main_recipe.get("mount_instructions", {}).get("required_mounts", [])
@@ -367,14 +377,39 @@ class Store:
         try:
             lower_dirs = [str(paths.forest)]
             if sys_pkg_lowers:
-                lower_dirs.extend([str(p) for p in sys_pkg_lowers])
+                pass
+                #lower_dirs.extend([str(p) for p in sys_pkg_lowers])
             lower_dirs.append(str(self.base_rootfs))
+
+            for p in lower_dirs + [str(paths.upper), str(paths.work), str(paths.merged)]:
+                if not os.path.exists(p):
+                    raise FileNotFoundError(f"MOUNT BLOCKED: Path does not exist: {p}")
+                if not os.path.isdir(p):
+                    raise NotADirectoryError(f"MOUNT BLOCKED: Path is a file, but OverlayFS requires a directory: {p}")
             
             lower_str = ":".join(lower_dirs)
             opts = f"lowerdir={lower_str},upperdir={paths.upper},workdir={paths.work}"
-            
-            subprocess.run(["mount", "-t", "overlay", "overlay", "-o", opts, str(paths.merged)], check=True)
-            mounts.append(paths.merged)
+
+            print(f"Options length: {len(opts)} bytes") # Check length constraint
+
+            try:
+                # Capture output so we can see what mount complains about
+                result = subprocess.run(
+                    ["mount", "-t", "overlay", "overlay", "-o", opts, str(paths.merged)], 
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+                print("Mount successful!")
+            except subprocess.CalledProcessError as e:
+                self.logger.info(f"Mount failed with code {e.returncode}")
+                self.logger.info(f"Stderr: {e.stderr}")
+                subprocess.run(f"stat -f {paths.work}", shell=True)
+
+                # Fetch the last 5 lines of kernel logs to see the REAL OverlayFS error
+                self.logger.info("\n--- Kernel logs (dmesg) ---")
+                subprocess.run("dmesg | tail -n 30", shell=True)
+                raise
 
             for api in ["proc", "sys", "dev"]:
                 target = paths.merged / api
@@ -487,6 +522,19 @@ class Store:
         if not recipe_path.exists(): return {}
         with open(recipe_path, "r") as f:
             return json.load(f)
+        
+    @contextmanager
+    def _transaction_lock(self):
+        lock_path = self.transient / ".update.lock"
+        self.transient.mkdir(parents=True, exist_ok=True)
+        
+        with open(lock_path, 'w') as lock_file:
+            self.logger.info("Acquiring transaction lock (waiting if busy)...")
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
 
     def _cleanup_transaction(self):
         for tx in self._active_tx_paths:

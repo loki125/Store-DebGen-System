@@ -81,7 +81,7 @@ class Generation:
 
         os.symlink(target, CURRENT_LINK)
 
-    def create_manifest(self, to_add: Optional[List[str]] = None, to_rm: Optional[List[str]] = None) -> Tuple[GenManifest, GenManifest]:
+    def create_manifest(self, to_add: List[Path] = None, to_rm: List[Path] = None) -> Tuple[GenManifest, GenManifest]:
         current: GenManifest = self.get_current_manifest()
         new_gen: GenManifest = copy.deepcopy(current)
         
@@ -115,7 +115,7 @@ class Generation:
             add_queue = to_add.copy()
             
             while add_queue:
-                current_hash = add_queue.pop(0)
+                current_hash = add_queue.pop(0).name
                 
                 recipe: Dict = self.store.get_recipe(STORE_ROOT / current_hash)
                 if not recipe: 
@@ -150,13 +150,13 @@ class Generation:
                         dep_layer.p += isolated_p
 
         self.logger.debug(pformat(new_gen.to_json(), indent=4))
-        return current, new_gen
+        return new_gen, current
     
     def _calculate_diff(self, old_manifest: GenManifest, new_manifest: GenManifest) -> Tuple[Set[Layer], Set[Layer]]:
         self.logger.info("Calculating differences...")
         old_pkgs = set(old_manifest.active_layers)
         new_pkgs = set(new_manifest.active_layers)
-        return old_pkgs - new_pkgs, new_pkgs - old_pkgs
+        return new_pkgs - old_pkgs, old_pkgs - new_pkgs
 
     def execute(self, new_manifest: GenManifest, current_manifest: GenManifest, overwrite_flag: bool = False) -> bool:
         self.logger.info(f"=== STARTING TRANSITION: Gen {current_manifest.timestamp_id} -> Gen {new_manifest.timestamp_id} ===")
@@ -213,7 +213,6 @@ class Generation:
         for layer in sorted_layers:
             pkg_store_path = STORE_ROOT / layer.h
 
-            # If it's a system package without a wrapper, this safely ignores it.
             self._link_wrappers_to_bin(layer.h, gen_bin_dir)
 
             for lib_path in LIB_PATHS:
@@ -222,26 +221,29 @@ class Generation:
             for lib64_path in LIB64_PATHS:  
                 self._handle_lib_symlinking(pkg_store_path, gen_lib64_dir, lib64_path)
 
-        return base_path_str
-    
+        return str(base_path_str)
+
     def _link_wrappers_to_bin(self, hash_str: str, target_dir: Path):
         wrapper_root = WRAPPER_DIR / hash_str
         target_dir.mkdir(parents=True, exist_ok=True)
         
         if not wrapper_root.exists():
             return
-
+        
         for entry in wrapper_root.rglob('*'):
-            if entry.is_file():
+            if entry.is_file() and os.access(entry, os.X_OK):
                 symlink_path = target_dir / entry.name
                 try:
                     if symlink_path.exists() or symlink_path.is_symlink():
-                        symlink_path.unlink()
+                        if symlink_path.is_dir() and not symlink_path.is_symlink():
+                            shutil.rmtree(symlink_path)
+                        else:
+                            symlink_path.unlink()
                         
                     os.symlink(entry, symlink_path)
-                    self.logger.debug(f"Linked: {symlink_path} -> {entry}")
+                    self.logger.debug(f"Linked wrapper: {symlink_path} -> {entry}")
                 except OSError as e:
-                    self.logger.error(f"Failed to create symlink for {entry.name}: {e}")
+                    self.logger.error(f"Failed to create wrapper symlink for {entry.name}: {e}")
 
     def _handle_lib_symlinking(self, pkg_store_path: Path, gen_lib_dir: Path, isolated_lib: str):
         pkg_lib_source = pkg_store_path / isolated_lib

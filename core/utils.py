@@ -20,26 +20,31 @@ class Layer:
 
 @dataclass
 class GenManifest:
-    timestamp_id: str = field(init=False) # Timestamp
-    prev_id: Optional[int]
-    active_layers: List[Layer]
-    relations: Dict[str, Dict[str, int]] #{hash_path : {hash_path : isolated_priority number} }
+    timestamp_id: Optional[str] = None
+    prev_id: Optional[int] = None
+    active_layers: List[Layer] = field(default_factory=list)
+    relations: Dict[str, Dict[str, int]] = field(default_factory=dict)
     active: bool = False
     health: HealthInfo = field(default_factory=HealthInfo)
 
     def __post_init__(self):
-        self.timestamp_id = datetime.now().strftime("%m.%d.%Y:%H:%M:%S")
+        if self.timestamp_id is None:
+            self.timestamp_id = datetime.now().strftime("%m.%d.%Y:%H:%M:%S")
 
     def to_json(self):
         return json.dumps(asdict(self), indent=4)
 
     @classmethod
     def from_dict(cls, data: dict):
-        # Convert nested dicts back into Dataclasses
         data = data.copy()
         health = HealthInfo(**data.pop("health"))
         layers = [Layer(**l) for l in data.pop("active_layers")]
-        return cls(active_layers=layers, health=health, **data)
+
+        return cls(
+            active_layers=layers,
+            health=health,
+            **data  # now includes timestamp_id safely
+        )
 
 @dataclass
 class WrapperConfig:

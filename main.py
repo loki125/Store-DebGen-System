@@ -42,14 +42,18 @@ def build_parser():
     parser_update.add_argument('package', type=str, help='Name of the package')
     parser_update.add_argument('version', type=str, help='Version to update to')
 
+    #ddls system *store path*
+    parser_system = subparsers.add_parser('system', help='Update system packages')
+    parser_system.add_argument('store_path', type=str, help='Path to the system package in the store')
+
     # ddls insert *+/-pkg-version
     parser_insert = subparsers.add_parser('insert', help='Insert or remove packages')
-    parser_insert.add_argument('changes', nargs='+', help='List of changes (e.g. +pkg-1.0 -pkg-0.9)')
+    parser_insert.add_argument('changes', nargs='+', help='List of changes (e.g. +pkg=1.0 -pkg=0.9)')
 
     #ddls reset -> nuke pkg_manager
-    subparsers.add_parser('reset', help='perminently deletes all packages and generations.')
+    parser_reset = subparsers.add_parser('reset', help='perminently deletes a spesific path or all packages and generations.')
     
-        #ddls reset -> nuke pkg_manager
+    #ddls reset -> nuke pkg_manager
     subparsers.add_parser('start', help='runs only the setup fase.')
     return parser
 
@@ -71,7 +75,7 @@ def setup(argv):
     parser = build_parser()
     return parser, parser.parse_args(argv)
 
-def handle_insert_logic(change_args):
+def handle_insert_logic(change_args) -> Tuple[List[Path]]:
     """
     Processes the raw list from the insert command.
     Separates into add/remove lists and resolves hash paths.
@@ -93,9 +97,9 @@ def handle_insert_logic(change_args):
         full_path = os.path.join(STORE_ROOT, store_path)
 
         if command == ADD_INDICATOR:
-            to_add.append(full_path)
+            to_add.append(Path(full_path))
         elif command == RM_INDICATOR:
-            to_remove.append(full_path)
+            to_remove.append(Path(full_path))
         else:
             logging.error(f"commad not supported for pkg {striped_pkg}")
             raise
@@ -121,21 +125,19 @@ def main(argv=None):
                 
         elif args.command == "update":
             query : Dict = store.fetcher.get(ENDPOINTS.PKG_VER_INFO, {"Package": args.package, "Version" : args.version})
-            req_sys = ["mount_instructions"]["required_system_package"]
-            if req_sys and not os.exists(STORE_ROOT / req_sys):
-
-                print("Warning: The new generation requires a system packages.")
-                choice = input("Would you like to continue? [y/N]: ").lower()
-                
-                if choice != 'y':
-                    print("Update aborted by user.")
-                    return 1
-
-                if not store.update_sys(req_sys):
-                    logging.error("system update failed, aborting update...")
-                    return 1
-
+            
             return int(store.update(query))
+
+        elif args.command == "system":
+            if os.path.exists(STORE_ROOT / args.store_path):
+                logging.info(f"System package {args.store_path} already exists in store")
+            
+            else:
+                if not store.update_sys(args.store_path):
+                    logging.error("system update failed, aborting...")
+                    return 1
+                else:
+                    logging.info(f"System package {args.store_path} updated successfully")
 
         elif args.command == "insert":
             adds, rms = handle_insert_logic(args.changes)
@@ -144,13 +146,13 @@ def main(argv=None):
                 return 1
             
             gen = Gen(store)
-            curr, new = gen.create_manifest(adds, rms)
+            new, curr = gen.create_manifest(adds, rms)
 
-            return int(gen.execute(curr, new))
+            return int(gen.execute(new, curr))
         
         elif args.command == "reset":
             while True:
-                choice = input("Reset will permanently delete all packages and generations. Are you sure? [y/n] ").strip().lower()
+                choice = input("Reset will permanently delete all packages and generations. Are you sure? [y/N] ").strip().lower()
                 
                 if choice == 'y':
                     store.reset_target(BASE_DIR)
