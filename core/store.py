@@ -225,6 +225,21 @@ class Store:
             finally:
                 self._cleanup_transaction()
 
+    @staticmethod
+    def _env_injection_list(pkg_name : str) -> Dict:
+        env = os.environ.copy()
+        env.update({
+            "DPKG_MAINTSCRIPT_NAME": "postinst",
+            "DPKG_MAINTSCRIPT_PACKAGE": pkg_name,
+            "DPKG_MAINTSCRIPT_ARCH": "amd64",
+            "DEBIAN_FRONTEND": "noninteractive",
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "TERM": "linux",
+            "LANG": "C.UTF-8"
+        })
+
+        return env
+    
     def _prepare_ingredients(self, pkg: Dict[str, Any], paths: TransactionPaths) -> Tuple[List[Tuple], List[Path]]:
         relative_store_path = Path(pkg["Store_Path"])
         
@@ -305,9 +320,13 @@ class Store:
         wrapper_path = WRAPPER_DIR / hash_path
         wrapper_path.mkdir(parents=True, exist_ok=True)
 
-        # Pre-calculate runtime lowers
-        runtime_lowers = [str(self.root / hash_path)]
-        runtime_lowers.extend([str(p) for p in sys_pkg_lowers])
+        # 1. Setup paths for OverlayFS Writable Upperdir
+        store_path = self.root / hash_path
+        work_path = wrapper_path / ".work"
+        work_path.mkdir(parents=True, exist_ok=True) 
+
+        # 2. Pre-calculate runtime lowers (NOTE: We removed store_path from here!)
+        runtime_lowers = [str(p) for p in sys_pkg_lowers]
         runtime_lowers.append(str(self.base_rootfs))
         lower_dirs_str = ":".join(runtime_lowers)
 
@@ -322,7 +341,8 @@ class Store:
             target_path.parent.mkdir(parents=True, exist_ok=True)
             
             context = WrapperConfig(
-                store_path=str(self.root / hash_path),
+                store_path=str(store_path),
+                store_path_work=str(work_path),
                 bin_src=provide,
                 lower_dirs=lower_dirs_str
             )
@@ -371,6 +391,14 @@ class Store:
         except OSError as e:
             self.logger.critical(f"Cleanup of {resolved_target} failed: {e}")
         
+    @staticmethod
+    def generate_lower_str(lowers: List[str]) -> str:
+        """
+        Safely joins a list of paths for an OverlayFS lowerdir argument, 
+        escaping any colons present in the actual directory names.
+        """
+        return ":".join([str(path).replace(":", "\\:") for path in lowers])
+
     @contextmanager
     def _mount_stack(self, paths: TransactionPaths, sys_pkg_lowers: List[Path] = None):
         mounts = []
@@ -387,7 +415,7 @@ class Store:
                 if not os.path.isdir(p):
                     raise NotADirectoryError(f"MOUNT BLOCKED: Path is a file, but OverlayFS requires a directory: {p}")
             
-            lower_str = ":".join(lower_dirs)
+            lower_str = self.generate_lower_str(lower_dirs)
             opts = f"lowerdir={lower_str},upperdir={paths.upper},workdir={paths.work}"
 
             print(f"Options length: {len(opts)} bytes") # Check length constraint
@@ -463,7 +491,11 @@ class Store:
             postinst_rel = DPKG_POSTINST_PATH
             if (paths.merged / postinst_rel).exists():
                 self.logger.info(f"Running postinst for {pkg_name}...")
-                subprocess.run(["chroot", str(paths.merged), f"/{postinst_rel}", "configure"], check=True)
+
+                subprocess.run(["chroot", str(paths.merged), f"/{postinst_rel}", "configure"], 
+                               check=True,
+                               env=self._env_injection_list(pkg_name)
+                )
 
     def _commit_package(self, upper_path: Path, store_path: Path, pkg_map_key: str) -> bool:
         if not any(os.scandir(upper_path)):

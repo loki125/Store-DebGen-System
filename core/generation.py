@@ -90,10 +90,10 @@ class Generation:
 
         # REMOVE LOGIC
         if to_rm:
-            remove_queue = to_rm.copy()
+            remove_queue : List[Path] = to_rm.copy()
             
             while remove_queue:
-                target_hash = remove_queue.pop(0)
+                target_hash = remove_queue.pop(0).name
                 
                 if target_hash in new_gen.relations:
                     for dep_hash, isolated_p in list(new_gen.relations[target_hash].items()):
@@ -104,7 +104,7 @@ class Generation:
                             del new_gen.relations[target_hash][dep_hash]
 
                             if dep_layer.p <= 0:
-                                remove_queue.append(dep_hash)
+                                remove_queue.append(STORE_ROOT / dep_hash)
 
                 new_gen.active_layers = [l for l in new_gen.active_layers if l.h != target_hash]
                 if target_hash in new_gen.relations:
@@ -112,7 +112,7 @@ class Generation:
 
         # ADDITION LOGIC
         if to_add:
-            add_queue = to_add.copy()
+            add_queue : List[Path] = to_add.copy()
             
             while add_queue:
                 current_hash = add_queue.pop(0).name
@@ -143,7 +143,7 @@ class Generation:
                     if not dep_layer:
                         dep_layer = Layer(h=dep_hash, p=0)
                         new_gen.active_layers.append(dep_layer)
-                        add_queue.append(dep_hash)
+                        add_queue.append(STORE_ROOT / dep_hash)
 
                     if dep_hash not in new_gen.relations[current_hash]:
                         new_gen.relations[current_hash][dep_hash] = isolated_p

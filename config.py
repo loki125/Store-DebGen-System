@@ -32,6 +32,7 @@ STRUCTURE:
 MANAGER : str = "isolated-manager"
 BASE_DIR = Path(os.getenv("IM_BASE", f"/var/lib/{MANAGER}"))
 ACTIVE_LINK = Path(os.getenv("IM_ACTIVE_LINK", f"/var/{MANAGER}/active"))
+PKG_MANAGER_LINK = "/usr/bin/ddls"
 
 # DATA VAR
 BASE_ROOTFS_TARBALL = Path(os.getenv("IM_BASE_ROOTFS", "data/base.tar.gz"))

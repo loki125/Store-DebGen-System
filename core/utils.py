@@ -49,6 +49,7 @@ class GenManifest:
 @dataclass
 class WrapperConfig:
     store_path: str
+    store_path_work: str 
     bin_src: str
     lower_dirs: str 
     shared_path: str = field(init=False)
@@ -58,12 +59,7 @@ class WrapperConfig:
         self.shared_path = str(SHARED_RUN)
 
     def to_dict(self):
-        return {
-            "store_path": self.store_path,
-            "bin_src": self.bin_src,
-            "lower_dirs": self.lower_dirs, 
-            "shared_path": self.shared_path
-        }
+        return asdict(self)
 
 
 @dataclass
