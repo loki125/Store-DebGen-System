@@ -48,10 +48,11 @@ class GenManifest:
 
 @dataclass
 class WrapperConfig:
-    store_path: str
-    store_path_work: str 
+    upper_path: str
+    work_path: str
     bin_src: str
     lower_dirs: str 
+    store_root:  str
     shared_path: str = field(init=False)
 
     def __post_init__(self):

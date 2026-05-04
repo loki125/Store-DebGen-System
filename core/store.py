@@ -162,11 +162,8 @@ class Store:
                     self.logger.info(f"Installing system bundle {sys_pkg_path} via dpkg...")
                     self._upgrade_system_libs(paths.merged, sys_pkg_path, deb_paths)
 
-                # Step 3: lazy unmount the system package to be used as lower 
-                self._umount_tree(paths.merged)
-
-                # Step 4: Atomic Commit to Store
-                if not self._commit_package(paths.upper, store_path, map_key):
+                # Step 3: Atomic Commit to Store
+                if not self._commit_package(paths, store_path, map_key):
                     raise Exception(f"Commit failed for {sys_pkg_path}")
 
                 return True
@@ -200,16 +197,16 @@ class Store:
                     self._run_sandbox_install(name, paths, deb_paths, sys_pkg_lowers)
 
                     # 3. Freeze the result into the store
-                    if not self._commit_package(paths.upper, Path(current_store_path), map_key):
+                    wrapper_path = str(WRAPPER_DIR / current_store_path.name)
+                    if not self._commit_package(paths, Path(current_store_path), map_key, wrapper_path=wrapper_path):
                         raise Exception(f"Atomic commit failed for {name}")
 
-                    self._created_wrappers.discard(str(WRAPPER_DIR / current_store_path.name))
+                    self._created_wrappers.discard(wrapper_path)
 
                 return True
 
             except Exception as e:
-                self.logger.error(f"Failed to install {pkg_name}, initiating cleanup.")
-                self.logger.exception(e)
+                self.logger.error(f"Failed to install {pkg_name}, initiating cleanup.\n{e}")
                 
                 if current_store_path:
                     self.reset_target(Path(current_store_path))
@@ -278,7 +275,7 @@ class Store:
 
         # 1. Fetch main package first to read its recipe
         main_deb_path, main_recipe = _fetch_and_get_recipe(relative_store_path, paths)
-        pprint.pprint(main_recipe)
+        self.logger.debug(json.dumps(main_recipe, indent=4))
 
         # 2. Resolve system package layers beforehand.
         sys_reqs = main_recipe.get("mount_instructions", {}).get("system_mounts", [])
@@ -320,14 +317,23 @@ class Store:
         wrapper_path = WRAPPER_DIR / hash_path
         wrapper_path.mkdir(parents=True, exist_ok=True)
 
-        # 1. Setup paths for OverlayFS Writable Upperdir
         store_path = self.root / hash_path
-        work_path = wrapper_path / ".work"
-        work_path.mkdir(parents=True, exist_ok=True) 
+        
+        # 1. Create writable layers in the wrapper dir (Same filesystem)
+        upper_dir = wrapper_path / WRAPPER_UPPER
+        work_dir = wrapper_path / WRAPPER_WORK
+        upper_dir.mkdir(parents=True, exist_ok=True)
+        work_dir.mkdir(parents=True, exist_ok=True)
 
-        # 2. Pre-calculate runtime lowers (NOTE: We removed store_path from here!)
-        runtime_lowers = [str(p) for p in sys_pkg_lowers]
+        # 2. Setup the Forest
+        work_forest = wrapper_path / WRAPPER_FOREST
+        work_forest.mkdir(parents=True, exist_ok=True) 
+
+        # 3. Build Lower Stack (Store Path is now read-only and goes FIRST)
+        runtime_lowers = [str(store_path), str(work_forest)]
+        runtime_lowers.extend([str(p) for p in sys_pkg_lowers])
         runtime_lowers.append(str(self.base_rootfs))
+        
         lower_dirs_str = ":".join(runtime_lowers)
 
         for provide in provide_list:
@@ -340,11 +346,13 @@ class Store:
 
             target_path.parent.mkdir(parents=True, exist_ok=True)
             
+            # 4. Pass the new keys to the template
             context = WrapperConfig(
-                store_path=str(store_path),
-                store_path_work=str(work_path),
+                upper_path=str(upper_dir),
+                work_path=str(work_dir),
                 bin_src=provide,
-                lower_dirs=lower_dirs_str
+                lower_dirs=lower_dirs_str,
+                store_root=str(self.root),
             )
 
             tmp_path = target_path.with_suffix('.tmp')
@@ -497,7 +505,10 @@ class Store:
                                env=self._env_injection_list(pkg_name)
                 )
 
-    def _commit_package(self, upper_path: Path, store_path: Path, pkg_map_key: str) -> bool:
+    def _commit_package(self, paths: TransactionPaths, store_path: Path, pkg_map_key: str, wrapper_path : Path = None) -> bool:
+        upper_path : Path = paths.upper
+        forest_path : Path = paths.forest
+
         if not any(os.scandir(upper_path)):
             raise RuntimeError("Installation failed: Upper directory is empty")
         
@@ -508,14 +519,24 @@ class Store:
 
         tmp_store_target = STORE_TMP_ROOT / f"{store_path.name}.tmp"
         try:
+            # 1. lazy unmount the package to be used as lower 
+            self._umount_tree(paths.merged)
+
+            # 2. Commit forest: Copy paths.forest to wrapper .forest path
+            if wrapper_path is not None and forest_path.exists():
+                wrapper_forest = Path(wrapper_path) / WRAPPER_FOREST
+                shutil.copytree(str(forest_path), str(wrapper_forest), symlinks=True, dirs_exist_ok=True)
+            
+            # 3. Commit package data: move upperdir into the store
             shutil.move(str(upper_path), str(tmp_store_target))
             os.replace(str(tmp_store_target), str(store_path))
             self.logger.info(f"Package committed to store at {store_path}")
+
         except Exception as e:
             self._erase_package(store_path, pkg_map_key)
             if tmp_store_target.exists():
                 shutil.rmtree(tmp_store_target, ignore_errors=True)
-            self.logger.exception(e)
+            self.logger.error(e)
             return False
         
         return True

@@ -78,6 +78,21 @@ def build_parser() -> argparse.ArgumentParser:
         help='List of changes to apply (e.g., +nginx-1.18.0 -curl-7.68.0)'
     )
 
+    # INSTALL
+    parser_install = subparsers.add_parser('install', help='Fetch a package version and immediately insert it into the current generation')
+    parser_install.add_argument(
+        'package',
+        type=str,
+        metavar='PKG_NAME',
+        help='Name of the package'
+    )
+    parser_install.add_argument(
+        'version',
+        type=str,
+        metavar='VERSION',
+        help='Version to install'
+    )
+
     # RESET
     subparsers.add_parser(
         'reset', 
@@ -142,7 +157,7 @@ def handle_insert_logic(change_args: List[str]) -> Tuple[List[Path], List[Path]]
 
 
 # COMMAND HANDLERS
-def cmd_start() -> int:
+def cmd_start(args: argparse.Namespace) -> int:
     """Handles the 'start' command."""
     PKG_MANAGER_LINK = "/usr/bin/ddls"
     
@@ -203,6 +218,25 @@ def cmd_insert(args: argparse.Namespace) -> int:
     
     return 0 if success else 1
 
+def cmd_install(args: argparse.Namespace) -> int:
+    """Handles the 'install' command."""
+    
+    # First update/download package into store
+    update_rc = cmd_update(args)
+    if update_rc != 0:
+        return update_rc
+
+    # Then insert it into generation
+    KEY_STR = "{name}={version}"
+
+    insert_args = argparse.Namespace(
+        changes=[
+            f"+{KEY_STR.format(name=args.package, version=args.version)}"
+        ]
+    )
+
+    return cmd_insert(insert_args)
+
 def cmd_reset(args: argparse.Namespace) -> int:
     """Handles the 'reset' command."""
     while True:
@@ -234,6 +268,7 @@ def main(argv=None) -> int:
             'info': cmd_info,
             'update': cmd_update,
             'system': cmd_system,
+            'install': cmd_install,
             'insert': cmd_insert,
             'reset': cmd_reset
         }

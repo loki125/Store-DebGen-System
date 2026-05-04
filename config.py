@@ -115,6 +115,11 @@ SHARED_RUN = BASE_DIR / "shared_run"
 CURRENT_LINK = BASE_DIR / CURRENT
 PKG_MAP_PATH = BASE_DIR / PKG_MAP
 
+# Wrapper Inner Paths
+WRAPPER_FOREST = ".forest"
+WRAPPER_WORK = ".work"
+WRAPPER_UPPER = ".upper"
+
 # generation paths
 class GenPath:
     @staticmethod
