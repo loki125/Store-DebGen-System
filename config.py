@@ -12,6 +12,12 @@ class ENDPOINTS(Enum):
     PKG_VER_INFO = "pkgs_by_name_version"
     HASH_INFO = "pkgs_by_hash"
 
+class SystemPackageNotFoundError(FileNotFoundError):
+    sys_rel_path : str
+    def __init__(self, message: str, sys_rel_path: str):
+        self.sys_rel_path = sys_rel_path
+        super().__init__(message)
+
 
 # Base Paths
 
@@ -189,5 +195,4 @@ CRITICAL_PATHS = [
     "/etc/network/interfaces",
     "/boot"
 ]
-
 

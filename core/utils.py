@@ -43,7 +43,7 @@ class GenManifest:
         return cls(
             active_layers=layers,
             health=health,
-            **data  # now includes timestamp_id safely
+            **data
         )
 
 @dataclass
@@ -56,7 +56,6 @@ class WrapperConfig:
     shared_path: str = field(init=False)
 
     def __post_init__(self):
-        # Cast to str just in case SHARED_RUN is a Path object
         self.shared_path = str(SHARED_RUN)
 
     def to_dict(self):

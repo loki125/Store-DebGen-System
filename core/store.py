@@ -133,7 +133,6 @@ class Store:
                 stderr=subprocess.DEVNULL,
             )
         except subprocess.CalledProcessError:
-            # fallback to lazy unmount if something is still busy
             subprocess.run(
                 ["umount", "-l", "-R", str(path)],
                 check=False,
@@ -290,7 +289,7 @@ class Store:
         for sys_rel_path in sys_reqs:
             sys_path = self.root / Path(sys_rel_path)
             if not sys_path.exists():
-                raise FileNotFoundError(f"System requirement missing: {sys_rel_path}. Run 'ddls system {sys_rel_path}' first.")
+                raise SystemPackageNotFoundError(f"System requirement missing: {sys_rel_path}. Run 'ddls system {sys_rel_path}' first.", sys_rel_path)
             if sys_path not in sys_pkg_lowers:
                 sys_pkg_lowers.append(sys_path)
 
@@ -324,7 +323,6 @@ class Store:
 
             target_path.parent.mkdir(parents=True, exist_ok=True)
             
-            # 4. Pass the new keys to the template
             context = WrapperConfig(
                 upper_path=str(upper_dir),
                 work_path=str(work_dir),

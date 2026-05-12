@@ -11,17 +11,12 @@ import logging
 import os
 import sys
 from pathlib import Path
-import subprocess
 from typing import Tuple, List, Dict
 
-# Local imports
 from config import *
 from core import *
 
-# Initialize global logger overrides
 logging.addLevelName(logging.CRITICAL, "\033[91mCRITICAL\033[0m")
-
-# Global instances
 store = Store(Fetcher())
 
 
@@ -70,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser_system = subparsers.add_parser('system', help='Update base system packages in the local store')
     parser_system.add_argument('store_path', type=str, metavar='PATH', help='Path to the system package in the store')
 
-    # INSERT (Install/Remove)
+    # INSERT
     parser_insert = subparsers.add_parser('insert', help='Modify the environment (+install / -remove)')
     parser_insert.add_argument(
         'changes', 
@@ -116,11 +111,9 @@ def setup_environment(args: argparse.Namespace) -> None:
         force=True 
     )
 
-    # Ensure critical directories exist
     for path in [BASE_DIR, STORE_ROOT, GEN_DIR, SHARED_RUN, WRAPPER_DIR]:
         os.makedirs(path, exist_ok=True)
 
-    # Deploy Base RootFS if missing
     if not os.path.isdir(BASE_ROOTFS):
         try:
             os.makedirs(BASE_ROOTFS, exist_ok=False)
@@ -246,18 +239,21 @@ def cmd_insert(args: argparse.Namespace) -> int:
 
 def cmd_install(args: argparse.Namespace) -> int:
     """Handles the 'install' command."""
-    
-    # First update/download package into store
-    update_rc = cmd_update(args)
-    if update_rc != 0:
-        return update_rc
-
-    # Then insert it into generation
-    KEY_STR = "{name}={version}"
+    while True:
+        try:
+            update_rc = cmd_update(args)
+            if update_rc != 0:
+                return update_rc
+            break
+        except SystemPackageNotFoundError as e:
+            cmd_system(argparse.Namespace(store_path=e.sys_rel_path))
+            continue
+        except Exception as e:
+            raise e
 
     insert_args = argparse.Namespace(
         changes=[
-            f"+{KEY_STR.format(name=args.package, version=args.version)}"
+            f"{ADD_INDICATOR}{KEY_STR.format(name=args.package, version=args.version)}"
         ]
     )
 
@@ -310,7 +306,6 @@ def main(argv=None) -> int:
         parser = build_parser()
         args = parser.parse_args(argv)
 
-        # Map commands to their handler functions
         command_map = {
             'start': cmd_start,
             'info': cmd_info,
@@ -334,7 +329,6 @@ def main(argv=None) -> int:
         exit_code = 130
         
     except Exception as e:
-        # Global Error Catcher
         if args and args.debug:
             logging.exception("An unhandled exception occurred:")
         else:
@@ -342,9 +336,7 @@ def main(argv=None) -> int:
             
         exit_code = 1
 
-    # ONE single return point for the entire application
     return exit_code
-
 
 if __name__ == "__main__":
     sys.exit(main())
