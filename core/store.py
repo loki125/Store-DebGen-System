@@ -198,7 +198,10 @@ class Store:
                     self._created_wrappers.discard(wrapper_path)
 
                 return True
-
+            except SystemPackageNotFoundError as sys_e:
+                self.logger.info(sys_e.message)
+                raise sys_e
+            
             except Exception as e:
                 self.logger.error(f"Failed to install {pkg_name}, initiating cleanup.\n{e}")
                 
@@ -289,7 +292,7 @@ class Store:
         for sys_rel_path in sys_reqs:
             sys_path = self.root / Path(sys_rel_path)
             if not sys_path.exists():
-                raise SystemPackageNotFoundError(f"System requirement missing: {sys_rel_path}. Run 'ddls system {sys_rel_path}' first.", sys_rel_path)
+                raise SystemPackageNotFoundError(f"System requirement missing: {sys_rel_path}.\nRun 'ddls system {sys_rel_path}' first.", sys_rel_path)
             if sys_path not in sys_pkg_lowers:
                 sys_pkg_lowers.append(sys_path)
 

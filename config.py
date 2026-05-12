@@ -14,8 +14,10 @@ class ENDPOINTS(Enum):
 
 class SystemPackageNotFoundError(FileNotFoundError):
     sys_rel_path : str
+    message : str
     def __init__(self, message: str, sys_rel_path: str):
         self.sys_rel_path = sys_rel_path
+        self.message = message
         super().__init__(message)
 
 

@@ -245,8 +245,8 @@ def cmd_install(args: argparse.Namespace) -> int:
             if update_rc != 0:
                 return update_rc
             break
-        except SystemPackageNotFoundError as e:
-            cmd_system(argparse.Namespace(store_path=e.sys_rel_path))
+        except SystemPackageNotFoundError as sys_e:
+            cmd_system(argparse.Namespace(store_path=sys_e.sys_rel_path))
             continue
         except Exception as e:
             raise e
