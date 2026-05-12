@@ -33,6 +33,7 @@ MANAGER : str = "isolated-manager"
 BASE_DIR = Path(os.getenv("IM_BASE", f"/var/lib/{MANAGER}"))
 ACTIVE_LINK = Path(os.getenv("IM_ACTIVE_LINK", f"/var/{MANAGER}/active"))
 PKG_MANAGER_LINK = "/usr/bin/ddls"
+DEFAULT_ARCH = "amd64" 
 
 # DATA VAR
 BASE_ROOTFS_TARBALL = Path(os.getenv("IM_BASE_ROOTFS", "data/base.tar.gz"))
@@ -45,6 +46,7 @@ EXPORTS = (
     f'export LD_LIBRARY_PATH="/var/{MANAGER}/active/lib:$LD_LIBRARY_PATH"\n'
     f'export LD_LIBRARY_PATH="/var/{MANAGER}/active/lib64:$LD_LIBRARY_PATH"\n'
 )
+OVLFS_JUNK_STR = ".wh."
 ADD_INDICATOR = '+'
 RM_INDICATOR = '-'
 INDICATOR_SIZE = 1
@@ -67,7 +69,8 @@ POLICY_RC_D_PATH = "/usr/sbin/policy-rc.d"
 TMP_DIR_REL = "tmp"
 
 # Paths inside the chroot environment
-DPKG_POSTINST_PATH = "var/lib/dpkg/info/postinst"
+POSTINST = "postinst"
+DPKG_POSTINST_PATH = f"var/lib/dpkg/info/{POSTINST}"
 DPKG_INFO_PATH = "var/lib/dpkg/info"
 USR_BIN_PATH = "usr/bin"
 LDCONFIG_PATH = "/sbin/ldconfig"
@@ -147,7 +150,17 @@ class GenPath:
         return GenPath.base(gen_id) / MANIFEST
     
 BIN_PATHS = ["usr/bin", "bin", "usr/sbin", "sbin"]
-LIB_PATHS = ["usr/lib", "lib"]
+LIB_PATHS = []
+DEV_PATHS = [
+    ["usr/lib", "lib"],                   # Defualt headers 
+    ["usr/include", "headers"],           # C/C++ Headers
+    ["usr/lib/pkgconfig", "metadata"],    # Compilation metadata
+    ["usr/share/pkgconfig", "metadata"],  # Compilation metadata
+    ["usr/lib/cmake", "metadata"],        # CMake discovery
+    ["usr/share/java", "java"],           # Java JARs
+    ["usr/lib/python3", "python"],        # Python modules
+    ["usr/share", "data"]                 # Icons, translations, shared data
+]
 LIB64_PATHS = ["usr/lib64", "lib64"]
 
 

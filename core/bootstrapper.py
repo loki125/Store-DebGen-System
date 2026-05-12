@@ -1,10 +1,8 @@
 import subprocess
 import logging
 import shutil
-import posixpath
 from pathlib import Path
 import tarfile
-from typing import Union, List
 
 from config import *
 

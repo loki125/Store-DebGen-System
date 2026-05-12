@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+import subprocess
 from typing import Tuple, List, Dict
 
 # Local imports
@@ -160,25 +161,50 @@ def handle_insert_logic(change_args: List[str]) -> Tuple[List[Path], List[Path]]
 def cmd_start(args: argparse.Namespace) -> int:
     """Handles the 'start' command."""
     PKG_MANAGER_LINK = "/usr/bin/ddls"
+    current_script = os.path.abspath(__file__)
     
-    if not os.path.lexists(PKG_MANAGER_LINK):
-        current_script = os.path.abspath(__file__)
+    if os.path.lexists(PKG_MANAGER_LINK):
+        logging.info(f"Command 'ddls' is already configured at {PKG_MANAGER_LINK}")
+    else:
         try:
             os.symlink(current_script, PKG_MANAGER_LINK)
             os.chmod(current_script, 0o755)
             logging.info(f"Successfully linked: {PKG_MANAGER_LINK} -> {current_script}")
         except PermissionError:
-            logging.error(f"Permission denied. Cannot create symlink at {PKG_MANAGER_LINK}. Please run 'start' with sudo.")
+            logging.error(f"Permission denied. Cannot create symlink. Please run 'start' with sudo.")
             return 1
-    else:
-        logging.info(f"Command 'ddls' is already configured at {PKG_MANAGER_LINK}")
+
+    try:
+        if PROFILE_D_DIR.exists() and PROFILE_SCRIPT_PATH.exists():
+            logging.info(f"DDLS environment already configured at {PROFILE_SCRIPT_PATH}")
+
+        elif PROFILE_D_DIR.exists():
+            logging.info(f"Adding DDLS to system environment via {PROFILE_SCRIPT_PATH}")
+            PROFILE_SCRIPT_PATH.write_text(f"{ETC_PROFILE_COMMENT}{EXPORTS}")
+            logging.info(f"Please run: source {PROFILE_SCRIPT_PATH} for your current session")
+
+        elif SYS_PROFILE_PATH.exists() and ACTIVE_BIN_EXPORT_STR in SYS_PROFILE_PATH.read_text():
+            logging.info(f"DDLS environment already configured in {SYS_PROFILE_PATH}")
+
+        elif SYS_PROFILE_PATH.exists():
+            logging.info("Appending DDLS Environment to /etc/profile")
+            content = SYS_PROFILE_PATH.read_text()
+            
+            sep = "" if content.endswith("\n") else "\n"
+            SYS_PROFILE_PATH.write_text(f"{content}{sep}{ETC_PROFILE_COMMENT}{EXPORTS}")
+            
+            logging.info(f"Please run: source {SYS_PROFILE_PATH} for your current session")
+
+    except PermissionError:
+        logging.warning("Permission denied: Could not update profiles. Ensure you run this as root!")
+        raise
         
     return 0
 
 def cmd_info(args: argparse.Namespace) -> int:
     """Handles the 'info' command."""
     try:
-        resp = store.fetcher.get(ENDPOINTS.PKG_INFO, {"Package": args.package})
+        resp = store.fetcher.get_packages_by_name(args.package)
         print(json.dumps(resp, indent=4, sort_keys=True))
         return 0
     except Exception as e:
@@ -187,7 +213,7 @@ def cmd_info(args: argparse.Namespace) -> int:
 
 def cmd_update(args: argparse.Namespace) -> int:
     """Handles the 'update' command."""
-    query: Dict = store.fetcher.get(ENDPOINTS.PKG_VER_INFO, {"Package": args.package, "Version": args.version})
+    query: Dict = store.fetcher.get_packages_by_name_version(args.package, args.version)
     success = store.update(query)
     return 0 if success else 1
 
@@ -239,25 +265,47 @@ def cmd_install(args: argparse.Namespace) -> int:
 
 def cmd_reset(args: argparse.Namespace) -> int:
     """Handles the 'reset' command."""
+    
     while True:
         choice = input("WARNING: Reset will permanently delete all packages and generations. Proceed? [y/N] ").strip().lower()
-        if choice == 'y':
-            store.reset_target(BASE_DIR)
-            if PROFILE_SCRIPT_PATH.exists():
-                os.remove(PROFILE_SCRIPT_PATH)
-            logging.info("Reset complete.")
-            return 0
-        elif choice == 'n' or choice == '':
+        if choice in ('n', ''):
             print("Operation canceled.")
             return 0
+        if choice == 'y':
+            break  
         print("Invalid input. Please type 'y' for yes or 'n' for no.")
+    store.reset_target(BASE_DIR)
+    
+    try:
+        if PROFILE_SCRIPT_PATH.exists():
+            PROFILE_SCRIPT_PATH.unlink()  
+            logging.info(f"Removed environment script {PROFILE_SCRIPT_PATH}")
+        
+        if SYS_PROFILE_PATH.exists():
+            content = SYS_PROFILE_PATH.read_text()
+            
+            if ACTIVE_BIN_EXPORT_STR in content:
+                block_to_remove = f"\n{ETC_PROFILE_COMMENT}{EXPORTS}"
+                
+                new_content = content.replace(block_to_remove, "") \
+                                     .replace(ETC_PROFILE_COMMENT, "") \
+                                     .replace(EXPORTS, "")
+                
+                SYS_PROFILE_PATH.write_text(new_content)
+                logging.info(f"Cleaned up DDLS environment from {SYS_PROFILE_PATH}")
+                
+    except PermissionError:
+        logging.warning("Permission denied: Could not clean up environment profiles. Ensure you run this as root!")
+
+    logging.info("Reset complete.")
+    return 0
 
 
 def main(argv=None) -> int:
     """Main application entry point."""
     exit_code = 0
     args = None
-    
+
     try:
         parser = build_parser()
         args = parser.parse_args(argv)
@@ -273,10 +321,8 @@ def main(argv=None) -> int:
             'reset': cmd_reset
         }
 
-        # Setup environment (directories, logging) before routing
         setup_environment(args)
 
-        # Route to appropriate command
         if args.command in command_map:
             exit_code = command_map[args.command](args)
         else:
@@ -284,7 +330,6 @@ def main(argv=None) -> int:
             exit_code = 1
 
     except KeyboardInterrupt:
-        # Handle CTRL+C cleanly
         print("\nOperation interrupted by user.")
         exit_code = 130
         

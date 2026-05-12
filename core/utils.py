@@ -73,28 +73,27 @@ class TransactionPaths:
     merged: Path
     download: Path
 
+def env_injection_list(pkg_name: str) -> Dict[str, str]:
+        env = os.environ.copy()
 
-#healther helpers
+        env.update({
+            "DEBIAN_FRONTEND": "noninteractive",
+            "DEBCONF_NONINTERACTIVE_SEEN": "true",
+            "RUNLEVEL": "1",
+            "FAKE_CHROOT": "1",
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "LD_LIBRARY_PATH": "/usr/local/lib:/usr/lib:/lib:/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu",
+            "TERM": "linux",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            
+            "DPKG_MAINTSCRIPT_PACKAGE": pkg_name,
+            "DPKG_MAINTSCRIPT_ARCH": DEFAULT_ARCH, 
+            "DPKG_MAINTSCRIPT_NAME": POSTINST
+        })
 
-@dataclass
-class Conflict:
-    path : str
-    old_source : str = field(init=False)
-    new_source : str
+        env.pop("DEBCONF_USE_CDEBCONF", None)
+        env.pop("DEBIAN_HAS_FRONTEND", None)
 
-    def __post_init__(self):
-        try:
-            if os.path.islink(self.path):
-                self.old_source = os.readlink(self.path)
-            else:
-                self.old_source = "real_file"
-        except OSError:
-            self.old_source = "unknown"
-
-@dataclass
-class Result:
-    pkg : str
-    exit_code : int
-    output : str
-
+        return env
 
