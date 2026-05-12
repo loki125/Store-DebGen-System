@@ -44,15 +44,15 @@
 
 ## Phase 3: Activation (The Environment)
 
-    [ ] 9. Generation Symlink Switching (The "Nix" Switch)
+    [V] 9. Generation Symlink Switching (The "Nix" Switch)
 
         What it fools: The User's PATH. By pointing /current-system to a specific store hash, you "activate" a specific version of your entire OS world.
 
-    [ ] 10. Namespace Unsharing (CLONE_NEWNS)
+    [V] 10. Namespace Unsharing (CLONE_NEWNS)
 
         What it fools: The Kernel's Mount Table.
 
         Detail: If you use chroot, the whole system sees the mount. If you use Mount Namespaces, Package A and Package B can both have a /usr/lib that points to different things at the same time on the same CPU.
 
-    [ ] 11. Environment Variable Injection (LD_LIBRARY_PATH)
+    [V] 11. Environment Variable Injection (LD_LIBRARY_PATH)
 

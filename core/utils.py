@@ -20,32 +20,39 @@ class Layer:
 
 @dataclass
 class GenManifest:
-    timestamp_id: str = field(init=False) # Timestamp
-    prev_id: Optional[int]
-    active_layers: List[Layer]
-    relations: Dict[str, Dict[str, int]] #{hash_path : {hash_path : isolated_priority number} }
+    timestamp_id: Optional[str] = None
+    prev_id: Optional[int] = None
+    active_layers: List[Layer] = field(default_factory=list)
+    relations: Dict[str, Dict[str, int]] = field(default_factory=dict)
     active: bool = False
     health: HealthInfo = field(default_factory=HealthInfo)
 
     def __post_init__(self):
-        self.timestamp_id = datetime.now().strftime("%m.%d.%Y:%H:%M:%S")
+        if self.timestamp_id is None:
+            self.timestamp_id = datetime.now().strftime("%m.%d.%Y:%H:%M:%S")
 
     def to_json(self):
         return json.dumps(asdict(self), indent=4)
 
     @classmethod
     def from_dict(cls, data: dict):
-        # Convert nested dicts back into Dataclasses
         data = data.copy()
         health = HealthInfo(**data.pop("health"))
         layers = [Layer(**l) for l in data.pop("active_layers")]
-        return cls(active_layers=layers, health=health, **data)
+
+        return cls(
+            active_layers=layers,
+            health=health,
+            **data  # now includes timestamp_id safely
+        )
 
 @dataclass
 class WrapperConfig:
-    store_path: str
+    upper_path: str
+    work_path: str
     bin_src: str
     lower_dirs: str 
+    store_root:  str
     shared_path: str = field(init=False)
 
     def __post_init__(self):
@@ -53,12 +60,7 @@ class WrapperConfig:
         self.shared_path = str(SHARED_RUN)
 
     def to_dict(self):
-        return {
-            "store_path": self.store_path,
-            "bin_src": self.bin_src,
-            "lower_dirs": self.lower_dirs, 
-            "shared_path": self.shared_path
-        }
+        return asdict(self)
 
 
 @dataclass
@@ -71,28 +73,27 @@ class TransactionPaths:
     merged: Path
     download: Path
 
+def env_injection_list(pkg_name: str) -> Dict[str, str]:
+        env = os.environ.copy()
 
-#healther helpers
+        env.update({
+            "DEBIAN_FRONTEND": "noninteractive",
+            "DEBCONF_NONINTERACTIVE_SEEN": "true",
+            "RUNLEVEL": "1",
+            "FAKE_CHROOT": "1",
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "LD_LIBRARY_PATH": "/usr/local/lib:/usr/lib:/lib:/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu",
+            "TERM": "linux",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            
+            "DPKG_MAINTSCRIPT_PACKAGE": pkg_name,
+            "DPKG_MAINTSCRIPT_ARCH": DEFAULT_ARCH, 
+            "DPKG_MAINTSCRIPT_NAME": POSTINST
+        })
 
-@dataclass
-class Conflict:
-    path : str
-    old_source : str = field(init=False)
-    new_source : str
+        env.pop("DEBCONF_USE_CDEBCONF", None)
+        env.pop("DEBIAN_HAS_FRONTEND", None)
 
-    def __post_init__(self):
-        try:
-            if os.path.islink(self.path):
-                self.old_source = os.readlink(self.path)
-            else:
-                self.old_source = "real_file"
-        except OSError:
-            self.old_source = "unknown"
-
-@dataclass
-class Result:
-    pkg : str
-    exit_code : int
-    output : str
-
+        return env
 

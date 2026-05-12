@@ -12,7 +12,6 @@ import logging
 
 from config import *
 from .store import Store
-from .health import Health
 from .utils import GenManifest, Layer, HealthInfo, GenPath
 
 class Generation:
@@ -25,30 +24,6 @@ class Generation:
         if not GEN_DIR.exists():
             self.logger.info(f"Initializing DDLS directory at {GEN_DIR}")
             GEN_DIR.mkdir(parents=True, exist_ok=True)
-        
-        # Since this modifies system files, it requires root/sudo
-        try:
-            if PROFILE_D_DIR.exists():
-                if not PROFILE_SCRIPT_PATH.exists():
-                    self.logger.info(f"Adding DDLS to system environment via {PROFILE_SCRIPT_PATH}")
-                    with open(PROFILE_SCRIPT_PATH, "w") as f:
-                        f.write(ETC_PROFILE_COMMENT)
-                        f.write(EXPORTS)
-            else:
-                # Fallback: Safely append to /etc/profile directly if profile.d doesn't exist
-                if SYS_PROFILE_PATH.exists():
-                    with open(SYS_PROFILE_PATH, "r") as f:
-                        profile_content = f.read()
-                    
-                    if ACTIVE_BIN_EXPORT_STR not in profile_content:
-                        self.logger.info("Appending DDLS Environment to /etc/profile")
-                        with open(SYS_PROFILE_PATH, "a") as f:
-                            f.write(f"\n{ETC_PROFILE_COMMENT}")
-                            f.write(EXPORTS)
-
-        except PermissionError:
-            self.logger.warning("Permission denied: Could not update profiles. Ensure you run this as root!")
-            raise
 
         if CURRENT_LINK.exists():
             return None
@@ -81,7 +56,7 @@ class Generation:
 
         os.symlink(target, CURRENT_LINK)
 
-    def create_manifest(self, to_add: Optional[List[str]] = None, to_rm: Optional[List[str]] = None) -> Tuple[GenManifest, GenManifest]:
+    def create_manifest(self, to_add: List[Path] = None, to_rm: List[Path] = None) -> Tuple[GenManifest, GenManifest]:
         current: GenManifest = self.get_current_manifest()
         new_gen: GenManifest = copy.deepcopy(current)
         
@@ -90,10 +65,10 @@ class Generation:
 
         # REMOVE LOGIC
         if to_rm:
-            remove_queue = to_rm.copy()
+            remove_queue : List[Path] = to_rm.copy()
             
             while remove_queue:
-                target_hash = remove_queue.pop(0)
+                target_hash = remove_queue.pop(0).name
                 
                 if target_hash in new_gen.relations:
                     for dep_hash, isolated_p in list(new_gen.relations[target_hash].items()):
@@ -104,7 +79,7 @@ class Generation:
                             del new_gen.relations[target_hash][dep_hash]
 
                             if dep_layer.p <= 0:
-                                remove_queue.append(dep_hash)
+                                remove_queue.append(STORE_ROOT / dep_hash)
 
                 new_gen.active_layers = [l for l in new_gen.active_layers if l.h != target_hash]
                 if target_hash in new_gen.relations:
@@ -112,10 +87,10 @@ class Generation:
 
         # ADDITION LOGIC
         if to_add:
-            add_queue = to_add.copy()
+            add_queue : List[Path] = to_add.copy()
             
             while add_queue:
-                current_hash = add_queue.pop(0)
+                current_hash = add_queue.pop(0).name
                 
                 recipe: Dict = self.store.get_recipe(STORE_ROOT / current_hash)
                 if not recipe: 
@@ -143,33 +118,37 @@ class Generation:
                     if not dep_layer:
                         dep_layer = Layer(h=dep_hash, p=0)
                         new_gen.active_layers.append(dep_layer)
-                        add_queue.append(dep_hash)
+                        add_queue.append(STORE_ROOT / dep_hash)
 
                     if dep_hash not in new_gen.relations[current_hash]:
                         new_gen.relations[current_hash][dep_hash] = isolated_p
                         dep_layer.p += isolated_p
 
         self.logger.debug(pformat(new_gen.to_json(), indent=4))
-        return current, new_gen
-    
+        return new_gen, current
+        
     def _calculate_diff(self, old_manifest: GenManifest, new_manifest: GenManifest) -> Tuple[Set[Layer], Set[Layer]]:
-        self.logger.info("Calculating differences...")
-        old_pkgs = set(old_manifest.active_layers)
-        new_pkgs = set(new_manifest.active_layers)
-        return old_pkgs - new_pkgs, new_pkgs - old_pkgs
+            self.logger.info("Calculating differences...")
+            
+            old_map = {l.h: l for l in old_manifest.active_layers}
+            new_map = {l.h: l for l in new_manifest.active_layers}
+            
+            added_hashes = set(new_map.keys()) - set(old_map.keys())
+            removed_hashes = set(old_map.keys()) - set(new_map.keys())
+            
+            to_add = {new_map[h] for h in added_hashes}
+            to_remove = {old_map[h] for h in removed_hashes}
+            
+            return to_add, to_remove
 
     def execute(self, new_manifest: GenManifest, current_manifest: GenManifest, overwrite_flag: bool = False) -> bool:
         self.logger.info(f"=== STARTING TRANSITION: Gen {current_manifest.timestamp_id} -> Gen {new_manifest.timestamp_id} ===")
-        healther = Health()
         new_path = None
         
         try:
             new_path = self._create_new_gen(new_manifest)
 
-            if not healther.gen_health(new_path):
-                raise Exception(f"New generation is broken. Aborting.\n{pformat(healther.report, indent=4)}")
-
-            to_remove, to_add = self._calculate_diff(current_manifest, new_manifest)
+            to_add, to_remove = self._calculate_diff(current_manifest, new_manifest)
             current_path = GEN_DIR / str(current_manifest.timestamp_id)
 
             sorted_remove = sorted(to_remove, key=attrgetter('p'))
@@ -213,35 +192,37 @@ class Generation:
         for layer in sorted_layers:
             pkg_store_path = STORE_ROOT / layer.h
 
-            # If it's a system package without a wrapper, this safely ignores it.
             self._link_wrappers_to_bin(layer.h, gen_bin_dir)
-
-            for lib_path in LIB_PATHS:
-                self._handle_lib_symlinking(pkg_store_path, gen_lib_dir, lib_path)
+            for lib_paths in DEV_PATHS:
+                for lib_path in lib_paths:
+                    self._handle_lib_symlinking(pkg_store_path, gen_lib_dir, lib_path)
                 
             for lib64_path in LIB64_PATHS:  
                 self._handle_lib_symlinking(pkg_store_path, gen_lib64_dir, lib64_path)
 
-        return base_path_str
-    
+        return str(base_path_str)
+
     def _link_wrappers_to_bin(self, hash_str: str, target_dir: Path):
         wrapper_root = WRAPPER_DIR / hash_str
         target_dir.mkdir(parents=True, exist_ok=True)
         
         if not wrapper_root.exists():
             return
-
+        
         for entry in wrapper_root.rglob('*'):
-            if entry.is_file():
+            if entry.is_file() and os.access(entry, os.X_OK):
                 symlink_path = target_dir / entry.name
                 try:
                     if symlink_path.exists() or symlink_path.is_symlink():
-                        symlink_path.unlink()
+                        if symlink_path.is_dir() and not symlink_path.is_symlink():
+                            shutil.rmtree(symlink_path)
+                        else:
+                            symlink_path.unlink()
                         
                     os.symlink(entry, symlink_path)
-                    self.logger.debug(f"Linked: {symlink_path} -> {entry}")
+                    self.logger.debug(f"Linked wrapper: {symlink_path} -> {entry}")
                 except OSError as e:
-                    self.logger.error(f"Failed to create symlink for {entry.name}: {e}")
+                    self.logger.error(f"Failed to create wrapper symlink for {entry.name}: {e}")
 
     def _handle_lib_symlinking(self, pkg_store_path: Path, gen_lib_dir: Path, isolated_lib: str):
         pkg_lib_source = pkg_store_path / isolated_lib

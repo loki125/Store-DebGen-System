@@ -1,6 +1,8 @@
 import os
 import json
+import re
 import shutil
+import stat
 import subprocess
 import zipfile
 import struct
@@ -10,7 +12,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 import logging
 
-from .utils import TransactionPaths, WrapperConfig
+from .utils import TransactionPaths, WrapperConfig, env_injection_list
 from config import *
 
 class Store:
@@ -48,18 +50,7 @@ class Store:
             h = ((h << 5) + h) + ord(char)
         return h % SLOT_COUNT
 
-    @contextmanager
-    def _transaction_lock(self):
-        lock_path = self.transient / ".update.lock"
-        self.transient.mkdir(parents=True, exist_ok=True)
-        
-        with open(lock_path, 'w') as lock_file:
-            self.logger.info("Acquiring transaction lock (waiting if busy)...")
-            fcntl.flock(lock_file, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock_file, fcntl.LOCK_UN)
+
 
     def _save_package_to_map(self, hash_path: Path, pkg_ver: str) -> bool:
         if not self.pkg_map.exists(): return False
@@ -132,6 +123,22 @@ class Store:
                 attempt += 1
         return False
 
+    def _umount_tree(self, path: Path):
+        """Force unmount all mounts under a given path."""
+        try:
+            subprocess.run(
+                ["umount", "-R", str(path)],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except subprocess.CalledProcessError:
+            # fallback to lazy unmount if something is still busy
+            subprocess.run(
+                ["umount", "-l", "-R", str(path)],
+                check=False,
+            )
+
     def update_sys(self, sys_pkg_path: Path) -> bool:
         """Dedicated flow to install System Bundles (Base Layers) into the store."""
         store_path = self.root / sys_pkg_path
@@ -143,21 +150,18 @@ class Store:
         with self._transaction_lock():
             paths = self._get_transaction_paths(sys_pkg_path)
             try:
-                # Step 1: Download and Extract
-                zip_path = self.fetcher.download_file(save_path=paths.download, relative_store_path=sys_pkg_path)
+                zip_path = self.fetcher.download_file(save_dir=paths.download, relative_store_path=sys_pkg_path)
                 if not zip_path: raise Exception(f"Download failed for {sys_pkg_path}")
                 
                 deb_paths = self._extract_zip_to_stage(zip_path, paths.stage)
                 recipe = self.get_recipe(paths.stage)
                 map_key = KEY_STR.format(name=recipe["package_name"], version=recipe["version"])
 
-                # Step 2: Sandbox Installation (Native dpkg)
                 with self._mount_stack(paths, sys_pkg_lowers=[]):
                     self.logger.info(f"Installing system bundle {sys_pkg_path} via dpkg...")
                     self._upgrade_system_libs(paths.merged, sys_pkg_path, deb_paths)
 
-                # Step 3: Atomic Commit to Store
-                if not self._commit_package(paths.upper, store_path, map_key):
+                if not self._commit_package(paths, store_path, map_key):
                     raise Exception(f"Commit failed for {sys_pkg_path}")
 
                 return True
@@ -183,24 +187,21 @@ class Store:
             current_store_path = None
             
             try:
-                # 1. Prepare layers (Finds system paths and regular deps)
-                mounting_list, sys_pkg_lowers = self._prepare_ingredients(pkg, main_paths)
+                mounting_list, sys_pkg_lowers, recipes_to_process, dpkg_records = self._prepare_ingredients(pkg, main_paths)
 
-                # 2. Install packages in topological order
-                for current_store_path, map_key, paths, name, deb_paths in mounting_list:
-                    self._run_sandbox_install(name, paths, deb_paths, sys_pkg_lowers)
+                for current_store_path, map_key, paths, name in mounting_list:
+                    self._run_sandbox_install(name, paths, recipes_to_process[paths.forest], sys_pkg_lowers, dpkg_records)
 
-                    # 3. Freeze the result into the store
-                    if not self._commit_package(paths.upper, Path(current_store_path), map_key):
+                    wrapper_path = str(WRAPPER_DIR / current_store_path.name)
+                    if not self._commit_package(paths, Path(current_store_path), map_key, wrapper_path=wrapper_path):
                         raise Exception(f"Atomic commit failed for {name}")
 
-                    self._created_wrappers.discard(str(WRAPPER_DIR / current_store_path.name))
+                    self._created_wrappers.discard(wrapper_path)
 
                 return True
 
             except Exception as e:
-                self.logger.error(f"Failed to install {pkg_name}, initiating cleanup.")
-                self.logger.exception(e)
+                self.logger.error(f"Failed to install {pkg_name}, initiating cleanup.\n{e}")
                 
                 if current_store_path:
                     self.reset_target(Path(current_store_path))
@@ -215,90 +216,102 @@ class Store:
                 
             finally:
                 self._cleanup_transaction()
-
-    def _prepare_ingredients(self, pkg: Dict[str, Any], paths: TransactionPaths) -> Tuple[List[Tuple], List[Path]]:
-        relative_store_path = Path(pkg["Store_Path"])
+    
+    def _prepare_ingredients(self, pkg: Dict[str, Any], main_paths: TransactionPaths) -> Tuple[List[Tuple[Path, str, TransactionPaths, str]], List[Path], Dict[Path, Dict[str, Any]], List[Dict[str, Any]]]:
+        main_rel_path = Path(pkg["Store_Path"])
         
-        # Initialize lists to be populated
         sys_pkg_lowers: List[Path] = []
+        dpkg_records: List[Dict[str, Any]] = []
         recipes_to_process: Dict[Path, Dict[str, Any]] = {}
-        mounting_list: List[Tuple] = []
+        mounting_list: List[Tuple[Path, str, TransactionPaths, str]] = []
 
-        # HELPER 1: Fetches and unpacks recipe
-        def _fetch_and_get_recipe(rel_path: Path, t_paths: TransactionPaths) -> Tuple[List[Path], Dict[str, Any]]:
-            t_paths.download.mkdir(parents=True, exist_ok=True)
-            t_paths.stage.mkdir(parents=True, exist_ok=True)
-            t_paths.forest.mkdir(parents=True, exist_ok=True)
+        main_deb_paths = self._fetch_package_archive(main_rel_path, main_paths)
+        main_recipe = self.fetcher.get_recipe_pkg(main_rel_path)
+        self.logger.debug(json.dumps(main_recipe, indent=4))
 
-            zip_path = self.fetcher.download_file(save_path=t_paths.download, relative_store_path=rel_path)
-            if zip_path is None:
-                raise Exception(f"Package/Dependency {rel_path} failed to download")
+        self._resolve_system_mounts(main_recipe, sys_pkg_lowers)
 
-            deb_paths = self._extract_zip_to_stage(zip_path, t_paths.stage)
-            recipe = self.get_recipe(t_paths.stage)
-            return deb_paths, recipe
-
-        # HELPER 2: integrates the packages we fetched
-        def _integrate(rel_path: Path, t_paths: TransactionPaths, deb_paths: List[Path], recipe: Dict[str, Any]):
-            pkg_name = recipe["package_name"]
-            version = recipe["version"]
-            map_key = KEY_STR.format(name=pkg_name, version=version)
-
-            for deb_path in deb_paths:
-                self._extract_deb_to_stage(deb_path, t_paths.stage)
-            
-            recipes_to_process[t_paths.forest] = recipe
-            mounting_list.append((self.root / rel_path, map_key, t_paths, pkg_name, []))
-            
-            self._create_wrapper(rel_path, recipe.get("provider_map", []), sys_pkg_lowers)
-
-        # 1. Fetch main package first to read its recipe
-        main_deb_path, main_recipe = _fetch_and_get_recipe(relative_store_path, paths)
-
-        # 2. Resolve system package layers beforehand.
-        sys_reqs = main_recipe.get("mount_instructions", {}).get("required_system_package", [])
-        if isinstance(sys_reqs, str): sys_reqs = [sys_reqs]
-        
-        for sys_rel_path in sys_reqs:
-            sys_path = self.root / Path(sys_rel_path)
-            if sys_path.exists():
-                if sys_path not in sys_pkg_lowers:
-                    sys_pkg_lowers.append(sys_path)
-            else:
-                # Fail fast if a required system package is not in the store.
-                raise FileNotFoundError(f"System requirement '{sys_rel_path}' not found. Please run update_sys for it first.")
-
-        # 3. Process regular dependencies IN TOPOLOGICAL ORDER
         required_mounts = main_recipe.get("mount_instructions", {}).get("required_mounts", [])
         
-        for rel_dep_path_str in required_mounts:
+        for rel_dep_path_str in reversed(required_mounts):
             rel_dep_path = Path(rel_dep_path_str)
-            store_target = self.root / rel_dep_path
-            
-            if store_target.exists():
+            dep_recipe = self.fetcher.get_recipe_pkg(rel_dep_path)
+
+            dpkg_records.append(dep_recipe.get("status", {}))
+
+            if (self.root / rel_dep_path).exists():
                 continue
                 
             dep_paths = self._get_transaction_paths(rel_dep_path.name)
-            dep_deb_path, dep_recipe = _fetch_and_get_recipe(rel_dep_path, dep_paths)
-            _integrate(rel_dep_path, dep_paths, dep_deb_path, dep_recipe)
+            dep_deb_paths = self._fetch_package_archive(rel_dep_path, dep_paths)
+            self._integrate_package(
+                rel_dep_path, dep_paths, dep_deb_paths, dep_recipe,
+                sys_pkg_lowers, recipes_to_process, mounting_list
+            )
 
-        # 4. Process the main package LAST
-        _integrate(relative_store_path, paths, main_deb_path, main_recipe)
-
-        # 5. Create the symlink forest 
-        if recipes_to_process:
-            self._plant_symlink_forest(recipes_to_process)
+        self._integrate_package(
+            main_rel_path, main_paths, main_deb_paths, main_recipe,
+            sys_pkg_lowers, recipes_to_process, mounting_list
+        )
             
-        return mounting_list, sys_pkg_lowers
+        return mounting_list, sys_pkg_lowers, recipes_to_process, dpkg_records
+
+    def _fetch_package_archive(self, rel_path: Path, t_paths: TransactionPaths) -> List[Path]:
+        t_paths.download.mkdir(parents=True, exist_ok=True)
+        t_paths.stage.mkdir(parents=True, exist_ok=True)
+        t_paths.forest.mkdir(parents=True, exist_ok=True)
+
+        zip_path = self.fetcher.download_file(save_dir=t_paths.download, relative_store_path=rel_path)
+        if not zip_path:
+            raise Exception(f"Failed to download package archive for: {rel_path}")
+
+        return self._extract_zip_to_stage(zip_path, t_paths.stage)
+
+    def _integrate_package(self, rel_path: Path, t_paths: TransactionPaths, deb_paths: List[Path], 
+                           recipe: Dict[str, Any], sys_pkg_lowers: List[Path], 
+                           recipes_to_process: Dict[Path, Dict[str, Any]], mounting_list: List) -> None:
+        pkg_name = recipe["package_name"]
+        version = recipe["version"]
+        map_key = KEY_STR.format(name=pkg_name, version=version)
+
+        for deb_path in deb_paths:
+            self._extract_deb_to_stage(deb_path, t_paths.stage)
+        
+        recipes_to_process[t_paths.forest] = recipe
+        mounting_list.append((self.root / rel_path, map_key, t_paths, pkg_name))
+        
+        self._create_wrapper(rel_path, recipe.get("provider_map", []), sys_pkg_lowers)
+
+    def _resolve_system_mounts(self, recipe: Dict[str, Any], sys_pkg_lowers: List[Path]) -> None:
+        sys_reqs = recipe.get("mount_instructions", {}).get("system_mounts", [])
+        if isinstance(sys_reqs, str): 
+            sys_reqs = [sys_reqs]
+            
+        for sys_rel_path in sys_reqs:
+            sys_path = self.root / Path(sys_rel_path)
+            if not sys_path.exists():
+                raise FileNotFoundError(f"System requirement missing: {sys_rel_path}. Run 'ddls system {sys_rel_path}' first.")
+            if sys_path not in sys_pkg_lowers:
+                sys_pkg_lowers.append(sys_path)
 
     def _create_wrapper(self, hash_path: Path, provide_list: List[str], sys_pkg_lowers: List[Path]):
         wrapper_path = WRAPPER_DIR / hash_path
         wrapper_path.mkdir(parents=True, exist_ok=True)
 
-        # Pre-calculate runtime lowers
-        runtime_lowers = [str(self.root / hash_path)]
+        store_path = self.root / hash_path
+        
+        upper_dir = wrapper_path / WRAPPER_UPPER
+        work_dir = wrapper_path / WRAPPER_WORK
+        upper_dir.mkdir(parents=True, exist_ok=True)
+        work_dir.mkdir(parents=True, exist_ok=True)
+
+        work_forest = wrapper_path / WRAPPER_FOREST
+        work_forest.mkdir(parents=True, exist_ok=True) 
+
+        runtime_lowers = [str(store_path), str(work_forest)]
         runtime_lowers.extend([str(p) for p in sys_pkg_lowers])
         runtime_lowers.append(str(self.base_rootfs))
+        
         lower_dirs_str = ":".join(runtime_lowers)
 
         for provide in provide_list:
@@ -312,9 +325,11 @@ class Store:
             target_path.parent.mkdir(parents=True, exist_ok=True)
             
             context = WrapperConfig(
-                store_path=str(self.root / hash_path),
+                upper_path=str(upper_dir),
+                work_path=str(work_dir),
                 bin_src=provide,
-                lower_dirs=lower_dirs_str
+                lower_dirs=lower_dirs_str,
+                store_root=str(self.root),
             )
 
             tmp_path = target_path.with_suffix('.tmp')
@@ -326,20 +341,40 @@ class Store:
 
             self._created_wrappers.add(str(wrapper_path))
 
-    def _plant_symlink_forest(self, recipes_to_process: Dict[Path, Dict[str, Any]]):
-        for forest_root, recipe in recipes_to_process.items():
-            for jail_path, store_path in recipe.get("symlink_forest", {}).items():
-                link_name = forest_root / jail_path.lstrip("/")
-                if '.so' in os.path.basename(store_path):
-                    target_data = STORE_ROOT / store_path
-                else:
-                    target_data = WRAPPER_DIR / store_path
+    def _plant_symlink_forest(self, forest_root, recipe):
+        for jail_path, store_path in recipe.get("symlink_forest", {}).items():
+            link_name = forest_root / jail_path.lstrip("/")
+            target_in_store = self.root / store_path
 
-                link_name.parent.mkdir(parents=True, exist_ok=True)
-                if link_name.is_symlink() or link_name.exists():
-                    link_name.unlink()
+            link_name.parent.mkdir(parents=True, exist_ok=True)
+
+            if os.path.lexists(str(link_name)):
+                link_name.unlink()
+
+            try:
+                st_l = target_in_store.lstat()
+            except FileNotFoundError:
+                self.logger.warning(f"Source missing in store: {target_in_store}")
+                continue
+
+            if stat.S_ISLNK(st_l.st_mode):
+                if target_in_store.exists():
+                    link_type = "link-to-store"
+                    os.symlink(str(target_in_store), str(link_name))
+                else:
+                    link_target = os.readlink(str(target_in_store))
+                    link_type = "cross-package-symlink"
+                    os.symlink(link_target, str(link_name))
+                    
+            elif stat.S_ISREG(st_l.st_mode) and (st_l.st_mode & 0o111):
+                link_type = "exec-copy"
+                shutil.copy2(target_in_store, link_name)
                 
-                os.symlink(target_data, link_name)
+            else:
+                link_type = "link-to-store"
+                os.symlink(str(target_in_store), str(link_name))
+
+            self.logger.debug(f"[{link_type}] {jail_path} -> {target_in_store}")
 
     def reset_target(self, target_path: Path):
         if not target_path.exists(): return
@@ -361,20 +396,46 @@ class Store:
         except OSError as e:
             self.logger.critical(f"Cleanup of {resolved_target} failed: {e}")
         
+    @staticmethod
+    def generate_lower_str(lowers: List[str]) -> str:
+        """
+        Safely joins a list of paths for an OverlayFS lowerdir argument, 
+        escaping any colons present in the actual directory names.
+        """
+        return ":".join([str(path).replace(":", "\\:") for path in lowers])
+
     @contextmanager
-    def _mount_stack(self, paths: TransactionPaths, sys_pkg_lowers: List[Path] = None):
+    def _mount_stack(self, paths: TransactionPaths, sys_pkg_lowers: List[Path] = None, dpkg_records: List[Dict[str, Any]] = None):
         mounts = []
         try:
             lower_dirs = [str(paths.forest)]
             if sys_pkg_lowers:
                 lower_dirs.extend([str(p) for p in sys_pkg_lowers])
+
             lower_dirs.append(str(self.base_rootfs))
+
+            for p in lower_dirs + [str(paths.upper), str(paths.work), str(paths.merged)]:
+                if not os.path.exists(p):
+                    raise FileNotFoundError(f"MOUNT BLOCKED: Path does not exist: {p}")
+                if not os.path.isdir(p):
+                    raise NotADirectoryError(f"MOUNT BLOCKED: Path is a file, but OverlayFS requires a directory: {p}")
             
-            lower_str = ":".join(lower_dirs)
+            lower_str = self.generate_lower_str(lower_dirs)
             opts = f"lowerdir={lower_str},upperdir={paths.upper},workdir={paths.work}"
-            
-            subprocess.run(["mount", "-t", "overlay", "overlay", "-o", opts, str(paths.merged)], check=True)
-            mounts.append(paths.merged)
+
+            try:
+                subprocess.run(
+                    ["fuse-overlayfs", "-o", opts, str(paths.merged)], 
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+            except subprocess.CalledProcessError as e:
+                self.logger.error(f"Mount failed with code {e.returncode}\nStderr: {e.stderr}")
+                subprocess.run(f"stat -f {paths.work}", shell=True)
+                self.logger.error("\n--- Kernel logs (dmesg) ---")
+                subprocess.run("dmesg | tail -n 30", shell=True)
+                raise
 
             for api in ["proc", "sys", "dev"]:
                 target = paths.merged / api
@@ -386,9 +447,38 @@ class Store:
             subprocess.run(["mount", "--bind", "-o", "ro", str(self.root), str(store_in_jail)], check=True)
             mounts.append(store_in_jail)
 
+            if dpkg_records:
+                dpkg_dir = paths.merged / "var" / "lib" / "dpkg"
+                info_dir = dpkg_dir / "info"
+                info_dir.mkdir(parents=True, exist_ok=True)
+
+                status_path = dpkg_dir / "status"
+                with open(status_path, "w") as status_file:
+                    written_packages = set()
+
+                    for record in dpkg_records:
+                        if not record or not record.get("name"):
+                            continue
+                        
+                        pkg_id = f"{record['name']}:{record['arch']}"
+                        if pkg_id in written_packages:
+                            continue
+
+                        block = record["status_block"].strip()
+                        status_file.write(block + "\n\n")
+                        
+                        written_packages.add(pkg_id)
+                        
+                        file_content = "\n".join(record["files"]) + "\n"
+                        (info_dir / f"{record['name']}.list").write_text(file_content)
+                        (info_dir / f"{record['name']}:{record['arch']}.list").write_text(file_content)
+
             yield 
             
         finally:
+            if dpkg_records:
+                shutil.rmtree(paths.merged / "var" / "lib" / "dpkg", ignore_errors=True)
+
             for target in reversed(mounts):
                 subprocess.run(["umount", "-l", str(target)], check=False)
 
@@ -409,28 +499,34 @@ class Store:
             self.logger.error(f"dpkg failed for bundle {pkg_name}.\nSTDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}")
             raise RuntimeError(f"Failed to cleanly install system bundle for {pkg_name}")
         
-        # Cleanup isolated copies
         for p in chroot_deb_paths:
             deb_file = merged_path / p.lstrip("/")
             if deb_file.exists():
                 deb_file.unlink()
 
-    def _run_sandbox_install(self, pkg_name: str, paths: TransactionPaths, deb_paths: List[Path], sys_pkg_lowers: List[Path]):
+    def _run_sandbox_install(self, pkg_name: str, paths: TransactionPaths, recipe: Dict[str, Any], sys_pkg_lowers: List[Path], dpkg_records: Dict[str, Any]):
         """Installs a regular package into the overlay stack."""
-        with self._mount_stack(paths, sys_pkg_lowers):
-            # 1. Copy staged files into the merged view
-            subprocess.run(["cp", "-a", f"{paths.stage}/.", str(paths.merged)], check=True)
+        if recipe:
+            self._plant_symlink_forest(paths.forest, recipe)
             
-            # 2. Update shared library cache
-            subprocess.run(["chroot", str(paths.merged), LDCONFIG_PATH, "-X"], check=True)
+        with self._mount_stack(paths, sys_pkg_lowers, dpkg_records):
+            subprocess.run(["cp", "-a", f"{paths.stage}/.", str(paths.merged)], check=True)
+            subprocess.run(["chroot", str(paths.merged), LDCONFIG_PATH], check=True)
 
-            # 3. Run the debian post-installation script if it exists
             postinst_rel = DPKG_POSTINST_PATH
             if (paths.merged / postinst_rel).exists():
-                self.logger.info(f"Running postinst for {pkg_name}...")
-                subprocess.run(["chroot", str(paths.merged), f"/{postinst_rel}", "configure"], check=True)
+                self.logger.info(f"Running postinst for {pkg_name}.")
+                self.logger.debug((paths.merged / postinst_rel).read_text())
+                
+                subprocess.run(["chroot", str(paths.merged), f"/{postinst_rel}", "configure", ""], 
+                               check=True,
+                               env=env_injection_list(pkg_name)
+                )
 
-    def _commit_package(self, upper_path: Path, store_path: Path, pkg_map_key: str) -> bool:
+    def _commit_package(self, paths: TransactionPaths, store_path: Path, pkg_map_key: str, wrapper_path : Path = None) -> bool:
+        upper_path : Path = paths.upper
+        forest_path : Path = paths.forest
+
         if not any(os.scandir(upper_path)):
             raise RuntimeError("Installation failed: Upper directory is empty")
         
@@ -441,19 +537,56 @@ class Store:
 
         tmp_store_target = STORE_TMP_ROOT / f"{store_path.name}.tmp"
         try:
-            shutil.move(str(upper_path), str(tmp_store_target))
+            self._umount_tree(paths.merged)
+
+            if wrapper_path is not None and forest_path.exists():
+                wrapper_forest = Path(wrapper_path) / WRAPPER_FOREST
+                self.copytree_filtered(forest_path, wrapper_forest)        
+            self.copytree_filtered(upper_path, tmp_store_target)
+
             os.replace(str(tmp_store_target), str(store_path))
-            self.logger.info(f"Package committed to store at {store_path}")
+            self.logger.info(f"Package committed to store: {pkg_map_key}")
+
         except Exception as e:
             self._erase_package(store_path, pkg_map_key)
             if tmp_store_target.exists():
                 shutil.rmtree(tmp_store_target, ignore_errors=True)
-            self.logger.exception(e)
+            self.logger.error(e)
             return False
         
         return True
+    
+    @staticmethod
+    def copytree_filtered(src: Path, dst: Path):
+        """
+        Copies a directory tree while filtering out OverlayFS whiteout 
+        artifacts and preserving symlinks.
+        """
+        src, dst = Path(src), Path(dst)
 
-    def _extract_zip_to_stage(self, zip_path: Path, stage_path: Path) -> List[Path]:
+        for root, dirs, files in os.walk(src, followlinks=False):
+            rel_path = Path(root).relative_to(src)
+            target_dir = dst / rel_path
+            target_dir.mkdir(parents=True, exist_ok=True)
+
+            dirs[:] = [d for d in dirs if not (d.startswith(OVLFS_JUNK_STR) or d == f"{OVLFS_JUNK_STR}{OVLFS_JUNK_STR}.opq")]
+
+            for name in files:
+                if name.startswith(OVLFS_JUNK_STR):
+                    continue
+
+                src_item = Path(root) / name
+                src_item.lstat()
+
+                dst_item = target_dir / name
+
+                if src_item.is_symlink():
+                    dst_item.symlink_to(os.readlink(src_item))           
+                elif src_item.is_file():
+                    shutil.copy2(src_item, dst_item)
+
+    @staticmethod
+    def _extract_zip_to_stage(zip_path: Path, stage_path: Path) -> List[Path]:
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(stage_path)
         deb_files = list(stage_path.glob("*.deb"))
@@ -461,7 +594,8 @@ class Store:
         if zip_path.exists(): zip_path.unlink()
         return deb_files
 
-    def _extract_deb_to_stage(self, deb_file: Path, stage_path: Path):
+    @staticmethod
+    def _extract_deb_to_stage(deb_file: Path, stage_path: Path):
         subprocess.run(["dpkg-deb", "-x", str(deb_file), str(stage_path)], check=True)
         control_dir = stage_path / DPKG_INFO_PATH
         control_dir.mkdir(parents=True, exist_ok=True)
@@ -481,12 +615,26 @@ class Store:
             path.mkdir(parents=True, exist_ok=True)
         self._active_tx_paths.append(tx)
         return tx
-
-    def get_recipe(self, stage_path: Path) -> Dict[str, Any]:
+    
+    @staticmethod
+    def get_recipe(stage_path: Path) -> Dict[str, Any]:
         recipe_path = stage_path / RECIPE
         if not recipe_path.exists(): return {}
         with open(recipe_path, "r") as f:
             return json.load(f)
+        
+    @contextmanager
+    def _transaction_lock(self):
+        lock_path = self.transient / ".update.lock"
+        self.transient.mkdir(parents=True, exist_ok=True)
+        
+        with open(lock_path, 'w') as lock_file:
+            self.logger.info("Acquiring transaction lock (waiting if busy)...")
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
 
     def _cleanup_transaction(self):
         for tx in self._active_tx_paths:
