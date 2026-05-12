@@ -324,6 +324,7 @@ class Store:
 
             target_path.parent.mkdir(parents=True, exist_ok=True)
             
+            # 4. Pass the new keys to the template
             context = WrapperConfig(
                 upper_path=str(upper_dir),
                 work_path=str(work_dir),
