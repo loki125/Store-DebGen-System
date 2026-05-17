@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from config import STORE_NODE
+from utils import APIEndpoints, APIParams
 
 class Fetcher:
     def __init__(self, headers: Optional[Dict[str, str]] = None):
@@ -38,39 +39,82 @@ class Fetcher:
             raise RuntimeError("Failed to parse JSON response from server.")
         except urllib.error.URLError as err:
             raise RuntimeError("Failed to connect to the store node.") from err
-
+        
     def get_recipe_pkg(self, store_path: Path | str) -> Dict[str, Any]:
-        return self._get_json("/recipe_pkg", {"Store_path": str(store_path)})
+        return self._get_json(
+            APIEndpoints.RECIPE_PKG,
+            {APIParams.STORE_PATH: str(store_path)}
+        )
+
 
     def get_packages_by_name(self, package_name: str) -> Dict[str, Any]:
-        return self._get_json("/pkgs_by_name", {"Package": package_name})
+        return self._get_json(
+            APIEndpoints.PKGS_BY_NAME,
+            {APIParams.PACKAGE: package_name}
+        )
 
-    def get_packages_by_name_version(self, package_name: str, version: str) -> Dict[str, Any]:
-        return self._get_json("/pkgs_by_name_version", {"Package": package_name, "Version": version})
+
+    def get_packages_by_name_version(
+        self,
+        package_name: str,
+        version: str
+    ) -> Dict[str, Any]:
+        return self._get_json(
+            APIEndpoints.PKGS_BY_NAME_VERSION,
+            {
+                APIParams.PACKAGE: package_name,
+                APIParams.VERSION: version
+            }
+        )
+
 
     def get_package_by_hash(self, sha256_hash: str) -> Dict[str, Any]:
-        return self._get_json("/pkg_by_hash", {"SHA256": sha256_hash})
+        return self._get_json(
+            APIEndpoints.PKG_BY_HASH,
+            {APIParams.SHA256: sha256_hash}
+        )
 
-    def download_file(self, save_dir: Path, relative_store_path: Path | str) -> Optional[Path]:
-        """Downloads the package ZIP and saves it inside save_dir."""
+
+    def download_file(
+        self,
+        save_dir: Path,
+        relative_store_path: Path | str
+    ) -> Optional[Path]:
+
         try:
             if not save_dir.exists() or not save_dir.is_dir():
-                raise FileNotFoundError(f"Target directory does not exist: {save_dir}")
+                raise FileNotFoundError(
+                    f"Target directory does not exist: {save_dir}"
+                )
 
-            with self._make_request("/download_pkg", {"Store_path": str(relative_store_path)}) as response:
-                cd_header = response.headers.get('Content-Disposition', '')
-                filename = self.get_filename(cd_header) or "pkg.zip"
-                
+            with self._make_request(
+                APIEndpoints.DOWNLOAD_PKG,
+                {APIParams.STORE_PATH: str(relative_store_path)}
+            ) as response:
+
+                cd_header = response.headers.get(
+                    "Content-Disposition",
+                    ""
+                )
+
+                filename = (
+                    self.get_filename(cd_header)
+                    or "pkg.zip"
+                )
+
                 zip_path = save_dir / filename
 
-                with open(zip_path, 'wb') as f:
+                with open(zip_path, "wb") as f:
                     while chunk := response.read(8192):
                         f.write(chunk)
 
                 return zip_path
 
         except urllib.error.HTTPError as err:
-            self.logger.error(f"Download failed - HTTP {err.code}: {err.reason}")
+            self.logger.error(
+                f"Download failed - HTTP {err.code}: {err.reason}"
+            )
+
         except Exception as e:
             self.logger.error(f"Download error: {e}")
 

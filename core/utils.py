@@ -1,10 +1,27 @@
 from dataclasses import dataclass, field, asdict
+from enum import StrEnum
 from typing import List, Dict, Optional
 import json
 import os
 from datetime import datetime
 
 from config import *
+
+
+@dataclass(frozen=True)
+class APIEndpoints:
+    RECIPE_PKG: str = "/recipe_pkg"
+    PKGS_BY_NAME: str = "/pkgs_by_name"
+    PKGS_BY_NAME_VERSION: str = "/pkgs_by_name_version"
+    PKG_BY_HASH: str = "/pkg_by_hash"
+    DOWNLOAD_PKG: str = "/download_pkg"
+
+
+class APIParams(StrEnum):
+    STORE_PATH = "Store_Path"
+    PACKAGE = "Package"
+    VERSION = "Version"
+    SHA256 = "SHA256"
 
 @dataclass
 class HealthInfo:
