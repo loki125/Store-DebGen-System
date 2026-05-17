@@ -1,6 +1,5 @@
 import os
 import json
-import re
 import shutil
 import stat
 import subprocess
@@ -16,7 +15,18 @@ from .utils import TransactionPaths, WrapperConfig, env_injection_list
 from config import *
 
 class Store:
+    """
+    @brief Manages the local package store, handling installation, binary mapping, and sandboxing.
+    """
     def __init__(self, fetcher, root=STORE_ROOT, transient=TRANS_ROOT, base_rootfs=BASE_ROOTFS, pkg_map=PKG_MAP_PATH):
+        """
+        @brief Initializes the Store with necessary filesystem paths and a fetcher instance.
+        @param fetcher The Fetcher instance used for remote package acquisition.
+        @param root The base directory for the package store.
+        @param transient The directory for temporary transaction files.
+        @param base_rootfs The path to the base system rootfs.
+        @param pkg_map The path to the binary package map file.
+        """
         self.root = Path(root).resolve()
         self.transient = Path(transient).resolve()
         self.base_rootfs = Path(base_rootfs).resolve()
@@ -38,25 +48,37 @@ class Store:
         self._created_wrappers: set = set()
 
     def _init_map(self):
+        """
+        @brief Creates and initializes the binary package map file if it does not exist.
+        """
         if not self.pkg_map.exists():
             with open(self.pkg_map, "wb") as f:
-                f.write(b'\x00' * (SLOT_COUNT * SLOT_SIZE))
+                f.write(BYTE_ZERO * (SLOT_COUNT * SLOT_SIZE))
             self.logger.info(f"Package map created at: {self.pkg_map}")
 
     @staticmethod
     def _hash_djb2(s: str) -> int:
+        """
+        @brief Computes a DJB2 hash index for the package map.
+        @param s The string key to hash.
+        @return An integer index within the SLOT_COUNT.
+        """
         h = 5381
         for char in s:
             h = ((h << 5) + h) + ord(char)
         return h % SLOT_COUNT
 
-
-
     def _save_package_to_map(self, hash_path: Path, pkg_ver: str) -> bool:
+        """
+        @brief Persists a package hash and version key to the binary map.
+        @param hash_path The filesystem path of the package in the store.
+        @param pkg_ver The version string used as a lookup key.
+        @return True if the package was saved successfully, False otherwise.
+        """
         if not self.pkg_map.exists(): return False
         index = self._hash_djb2(pkg_ver)
-        key_bytes = pkg_ver.encode('utf-8')[:KEY_SIZE].ljust(KEY_SIZE, b'\x00')
-        val_bytes = str(hash_path).encode('utf-8')[:VALUE_SIZE]
+        key_bytes = pkg_ver.encode(ENCODING_UTF8)[:KEY_SIZE].ljust(KEY_SIZE, BYTE_ZERO)
+        val_bytes = str(hash_path).encode(ENCODING_UTF8)[:VALUE_SIZE]
 
         with open(self.pkg_map, "rb+") as f:
             attempt = 0
@@ -84,9 +106,14 @@ class Store:
         return False
 
     def get_package(self, pkg_ver: str) -> Optional[str]:
+        """
+        @brief Retrieves the store path for a package version from the binary map.
+        @param pkg_ver The package name and version key.
+        @return The store path string if found, None otherwise.
+        """
         if not self.pkg_map.exists(): return None
         index = self._hash_djb2(pkg_ver)
-        key_bytes = pkg_ver.encode('utf-8')[:KEY_SIZE].ljust(KEY_SIZE, b'\x00')
+        key_bytes = pkg_ver.encode(ENCODING_UTF8)[:KEY_SIZE].ljust(KEY_SIZE, BYTE_ZERO)
         with open(self.pkg_map, "rb") as f:
             attempt = 0
             while attempt < SLOT_COUNT:
@@ -97,16 +124,22 @@ class Store:
                 if status == STATUS_OCCUPIED:
                     existing_key = data[1:1+KEY_SIZE]
                     if existing_key == key_bytes:
-                        return data[1+KEY_SIZE:].rstrip(b'\x00').decode('utf-8')
+                        return data[1+KEY_SIZE:].rstrip(BYTE_ZERO).decode(ENCODING_UTF8)
                 index = (index + 1) % SLOT_COUNT
                 attempt += 1
         return None
     
     def _erase_package(self, pkg_path: Path, pkg_ver: str) -> bool:
+        """
+        @brief Removes package files and marks the entry as deleted in the map.
+        @param pkg_path The path to the package directory.
+        @param pkg_ver The package version key.
+        @return True if erasure was successful, False otherwise.
+        """
         if pkg_path.exists(): shutil.rmtree(pkg_path)
         if not self.pkg_map.exists(): return False
         index = self._hash_djb2(pkg_ver)
-        key_bytes = pkg_ver.encode('utf-8')[:KEY_SIZE].ljust(KEY_SIZE, b'\x00')
+        key_bytes = pkg_ver.encode(ENCODING_UTF8)[:KEY_SIZE].ljust(KEY_SIZE, BYTE_ZERO)
         with open(self.pkg_map, "rb+") as f:
             attempt = 0
             while attempt < SLOT_COUNT:
@@ -124,22 +157,30 @@ class Store:
         return False
 
     def _umount_tree(self, path: Path):
-        """Force unmount all mounts under a given path."""
+        """
+        @brief Forcefully and recursively unmounts all filesystem mount points under a path.
+        @param path The target directory to clear of mounts.
+        """
         try:
             subprocess.run(
-                ["umount", "-R", str(path)],
+                [CMD_UMOUNT, ARG_RECURSIVE, str(path)],
                 check=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
         except subprocess.CalledProcessError:
             subprocess.run(
-                ["umount", "-l", "-R", str(path)],
+                [CMD_UMOUNT, ARG_LAZY, ARG_RECURSIVE, str(path)],
                 check=False,
             )
 
     def update_sys(self, sys_pkg_path: Path) -> bool:
-        """Dedicated flow to install System Bundles (Base Layers) into the store."""
+        """
+        @brief Fetches and installs a system bundle (base layer) into the local store.
+        @param sys_pkg_path The store-relative path for the system package.
+        @throw Exception if download or commit fails.
+        @return True if installation succeeded, False otherwise.
+        """
         store_path = self.root / sys_pkg_path
 
         if store_path.exists():
@@ -154,7 +195,7 @@ class Store:
                 
                 deb_paths = self._extract_zip_to_stage(zip_path, paths.stage)
                 recipe = self.get_recipe(paths.stage)
-                map_key = KEY_STR.format(name=recipe["package_name"], version=recipe["version"])
+                map_key = KEY_STR.format(name=recipe[KEY_PKG_NAME], version=recipe[KEY_VERSION])
 
                 with self._mount_stack(paths, sys_pkg_lowers=[]):
                     self.logger.info(f"Installing system bundle {sys_pkg_path} via dpkg...")
@@ -172,9 +213,13 @@ class Store:
                 self._cleanup_transaction()
 
     def update(self, pkg: Dict[str, Any]) -> bool:
-        """Regular package update. Expects system dependencies to already exist in store."""
-        pkg_name = pkg["Package"]
-        store_path = self.root / Path(pkg["Store_Path"])
+        """
+        @brief Orchestrates the transaction for installing a standard package and its dependencies.
+        @param pkg A dictionary containing metadata and paths for the target package.
+        @return True if the update process completed successfully, False otherwise.
+        """
+        pkg_name = pkg[KEY_PACKAGE]
+        store_path = self.root / Path(pkg[KEY_STORE_PATH])
 
         if store_path.exists():
             return True
@@ -217,7 +262,13 @@ class Store:
                 self._cleanup_transaction()
     
     def _prepare_ingredients(self, pkg: Dict[str, Any], main_paths: TransactionPaths) -> Tuple[List[Tuple[Path, str, TransactionPaths, str]], List[Path], Dict[Path, Dict[str, Any]], List[Dict[str, Any]]]:
-        main_rel_path = Path(pkg["Store_Path"])
+        """
+        @brief Resolves dependencies and prepares the transaction state for an update.
+        @param pkg The metadata of the package being updated.
+        @param main_paths The transaction paths for the primary package.
+        @return A collection of processed data required for the installation sandbox.
+        """
+        main_rel_path = Path(pkg[KEY_STORE_PATH])
         
         sys_pkg_lowers: List[Path] = []
         dpkg_records: List[Dict[str, Any]] = []
@@ -230,13 +281,13 @@ class Store:
 
         self._resolve_system_mounts(main_recipe, sys_pkg_lowers)
 
-        required_mounts = main_recipe.get("mount_instructions", {}).get("required_mounts", [])
+        required_mounts = main_recipe.get(KEY_MOUNT_INSTRUCTIONS, {}).get(KEY_REQUIRED_MOUNTS, [])
         
         for rel_dep_path_str in reversed(required_mounts):
             rel_dep_path = Path(rel_dep_path_str)
             dep_recipe = self.fetcher.get_recipe_pkg(rel_dep_path)
 
-            dpkg_records.append(dep_recipe.get("status", {}))
+            dpkg_records.append(dep_recipe.get(KEY_STATUS, {}))
 
             if (self.root / rel_dep_path).exists():
                 continue
@@ -256,6 +307,13 @@ class Store:
         return mounting_list, sys_pkg_lowers, recipes_to_process, dpkg_records
 
     def _fetch_package_archive(self, rel_path: Path, t_paths: TransactionPaths) -> List[Path]:
+        """
+        @brief Downloads and extracts a package zip file into the transaction stage.
+        @param rel_path The remote store path for the package.
+        @param t_paths The paths associated with the current transaction.
+        @throw Exception if download fails.
+        @return A list of paths to the extracted Debian package files.
+        """
         t_paths.download.mkdir(parents=True, exist_ok=True)
         t_paths.stage.mkdir(parents=True, exist_ok=True)
         t_paths.forest.mkdir(parents=True, exist_ok=True)
@@ -269,8 +327,12 @@ class Store:
     def _integrate_package(self, rel_path: Path, t_paths: TransactionPaths, deb_paths: List[Path], 
                            recipe: Dict[str, Any], sys_pkg_lowers: List[Path], 
                            recipes_to_process: Dict[Path, Dict[str, Any]], mounting_list: List) -> None:
-        pkg_name = recipe["package_name"]
-        version = recipe["version"]
+        """
+        @brief Processes a package's deb files and adds them to the transaction's integration list.
+        @param deb_paths List of paths to the .deb files for this package.
+        """
+        pkg_name = recipe[KEY_PKG_NAME]
+        version = recipe[KEY_VERSION]
         map_key = KEY_STR.format(name=pkg_name, version=version)
 
         for deb_path in deb_paths:
@@ -279,10 +341,16 @@ class Store:
         recipes_to_process[t_paths.forest] = recipe
         mounting_list.append((self.root / rel_path, map_key, t_paths, pkg_name))
         
-        self._create_wrapper(rel_path, recipe.get("provider_map", []), sys_pkg_lowers)
+        self._create_wrapper(rel_path, recipe.get(KEY_PROVIDER_MAP, []), sys_pkg_lowers)
 
     def _resolve_system_mounts(self, recipe: Dict[str, Any], sys_pkg_lowers: List[Path]) -> None:
-        sys_reqs = recipe.get("mount_instructions", {}).get("system_mounts", [])
+        """
+        @brief Validates and resolves system-level bundle requirements for a package.
+        @param recipe The package recipe containing system mount instructions.
+        @param sys_pkg_lowers A list to populate with paths of required system bundles.
+        @throw SystemPackageNotFoundError if a required system bundle is missing.
+        """
+        sys_reqs = recipe.get(KEY_MOUNT_INSTRUCTIONS, {}).get(KEY_SYSTEM_MOUNTS, [])
         if isinstance(sys_reqs, str): 
             sys_reqs = [sys_reqs]
             
@@ -294,6 +362,12 @@ class Store:
                 sys_pkg_lowers.append(sys_path)
 
     def _create_wrapper(self, hash_path: Path, provide_list: List[str], sys_pkg_lowers: List[Path]):
+        """
+        @brief Generates shell wrappers for binaries to run them within an OverlayFS sandbox.
+        @param hash_path The package hash identifier.
+        @param provide_list List of binary relative paths provided by the package.
+        @param sys_pkg_lowers Paths to system dependencies for the runtime sandbox.
+        """
         wrapper_path = WRAPPER_DIR / hash_path
         wrapper_path.mkdir(parents=True, exist_ok=True)
 
@@ -314,7 +388,7 @@ class Store:
         lower_dirs_str = ":".join(runtime_lowers)
 
         for provide in provide_list:
-            if provide.endswith('.so') or '.so.' in provide:
+            if provide.endswith(EXT_SO) or EXT_SO_PREFIX in provide:
                 continue
 
             target_path = (wrapper_path / provide).resolve()
@@ -331,7 +405,7 @@ class Store:
                 store_root=str(self.root),
             )
 
-            tmp_path = target_path.with_suffix('.tmp')
+            tmp_path = target_path.with_suffix(EXT_TMP)
             with open(tmp_path, "w") as f:
                 f.write(self.wrapper_template.format(**context.to_dict()))
             
@@ -341,7 +415,12 @@ class Store:
             self._created_wrappers.add(str(wrapper_path))
 
     def _plant_symlink_forest(self, forest_root, recipe):
-        for jail_path, store_path in recipe.get("symlink_forest", {}).items():
+        """
+        @brief Creates a directory tree of symlinks mimicking the required system structure.
+        @param forest_root The directory where symlinks will be created.
+        @param recipe Package recipe containing forest definitions.
+        """
+        for jail_path, store_path in recipe.get(KEY_SYMLINK_FOREST, {}).items():
             link_name = forest_root / jail_path.lstrip("/")
             target_in_store = self.root / store_path
 
@@ -358,28 +437,32 @@ class Store:
 
             if stat.S_ISLNK(st_l.st_mode):
                 if target_in_store.exists():
-                    link_type = "link-to-store"
+                    link_type = LINK_TYPE_STORE
                     os.symlink(str(target_in_store), str(link_name))
                 else:
                     link_target = os.readlink(str(target_in_store))
-                    link_type = "cross-package-symlink"
+                    link_type = LINK_TYPE_CROSS
                     os.symlink(link_target, str(link_name))
                     
             elif stat.S_ISREG(st_l.st_mode) and (st_l.st_mode & 0o111):
-                link_type = "exec-copy"
+                link_type = LINK_TYPE_EXEC
                 shutil.copy2(target_in_store, link_name)
                 
             else:
-                link_type = "link-to-store"
+                link_type = LINK_TYPE_STORE
                 os.symlink(str(target_in_store), str(link_name))
 
             self.logger.debug(f"[{link_type}] {jail_path} -> {target_in_store}")
 
     def reset_target(self, target_path: Path):
+        """
+        @brief Safely clears and removes a directory, ensuring any sub-mounts are unmounted.
+        @param target_path The path to clean and delete.
+        """
         if not target_path.exists(): return
         resolved_target = target_path.resolve()
         mounts = []
-        with open('/proc/mounts', 'r') as f:
+        with open(PROC_MOUNTS_PATH, 'r') as f:
             for line in f:
                 mount_point = Path(line.split()[1]).resolve()
                 if mount_point == resolved_target or resolved_target in mount_point.parents:
@@ -387,8 +470,8 @@ class Store:
 
         mounts.sort(key=len, reverse=True)
         for mount in mounts:
-            if subprocess.run(["umount", mount], stderr=subprocess.DEVNULL).returncode != 0:
-                subprocess.run(["umount", "-l", mount])
+            if subprocess.run([CMD_UMOUNT, mount], stderr=subprocess.DEVNULL).returncode != 0:
+                subprocess.run([CMD_UMOUNT, ARG_LAZY, mount])
         try:
             if os.path.ismount(str(resolved_target)): return
             shutil.rmtree(resolved_target)
@@ -405,6 +488,11 @@ class Store:
 
     @contextmanager
     def _mount_stack(self, paths: TransactionPaths, sys_pkg_lowers: List[Path] = None, dpkg_records: List[Dict[str, Any]] = None):
+        """
+        @brief Context manager to handle the mounting and unmounting of the sandbox environment.
+        @param paths The current transaction's filesystem paths.
+        @throw FileNotFoundError if mount paths are missing.
+        """
         mounts = []
         try:
             lower_dirs = [str(paths.forest)]
@@ -424,74 +512,81 @@ class Store:
 
             try:
                 subprocess.run(
-                    ["fuse-overlayfs", "-o", opts, str(paths.merged)], 
+                    [CMD_FUSE_OVERLAYFS, ARG_OPTIONS, opts, str(paths.merged)], 
                     check=True,
                     capture_output=True,
                     text=True
                 )
             except subprocess.CalledProcessError as e:
                 self.logger.error(f"Mount failed with code {e.returncode}\nStderr: {e.stderr}")
-                subprocess.run(f"stat -f {paths.work}", shell=True)
+                subprocess.run(f"{CMD_STAT_F} {paths.work}", shell=True)
                 self.logger.error("\n--- Kernel logs (dmesg) ---")
-                subprocess.run("dmesg | tail -n 30", shell=True)
+                subprocess.run(CMD_DMESG_TAIL, shell=True)
                 raise
 
-            for api in ["proc", "sys", "dev"]:
+            for api in API_MOUNT_POINTS:
                 target = paths.merged / api
-                subprocess.run(["mount", "--bind", f"/{api}", str(target)], check=True)
+                subprocess.run([CMD_MOUNT, ARG_BIND, f"/{api}", str(target)], check=True)
                 mounts.append(target)
 
             store_in_jail = paths.merged / str(self.root).lstrip("/")
             store_in_jail.mkdir(parents=True, exist_ok=True)
-            subprocess.run(["mount", "--bind", "-o", "ro", str(self.root), str(store_in_jail)], check=True)
+            subprocess.run([CMD_MOUNT, ARG_BIND, ARG_OPTIONS, ARG_RO, str(self.root), str(store_in_jail)], check=True)
             mounts.append(store_in_jail)
 
             if dpkg_records:
-                dpkg_dir = paths.merged / "var" / "lib" / "dpkg"
-                info_dir = dpkg_dir / "info"
+                dpkg_dir = paths.merged / DIR_VAR / DIR_LIB / DIR_DPKG
+                info_dir = dpkg_dir / DIR_INFO
                 info_dir.mkdir(parents=True, exist_ok=True)
 
-                status_path = dpkg_dir / "status"
+                status_path = dpkg_dir / FILE_STATUS
                 with open(status_path, "w") as status_file:
                     written_packages = set()
 
                     for record in dpkg_records:
-                        if not record or not record.get("name"):
+                        if not record or not record.get(KEY_NAME):
                             continue
                         
-                        pkg_id = f"{record['name']}:{record['arch']}"
+                        pkg_id = f"{record[KEY_NAME]}:{record[KEY_ARCH]}"
                         if pkg_id in written_packages:
                             continue
 
-                        block = record["status_block"].strip()
+                        block = record[KEY_STATUS_BLOCK].strip()
                         status_file.write(block + "\n\n")
                         
                         written_packages.add(pkg_id)
                         
-                        file_content = "\n".join(record["files"]) + "\n"
-                        (info_dir / f"{record['name']}.list").write_text(file_content)
-                        (info_dir / f"{record['name']}:{record['arch']}.list").write_text(file_content)
+                        file_content = "\n".join(record[KEY_FILES]) + "\n"
+                        (info_dir / f"{record[KEY_NAME]}{EXT_LIST}").write_text(file_content)
+                        (info_dir / f"{record[KEY_NAME]}:{record[KEY_ARCH]}{EXT_LIST}").write_text(file_content)
 
             yield 
             
         finally:
             if dpkg_records:
-                shutil.rmtree(paths.merged / "var" / "lib" / "dpkg", ignore_errors=True)
+                shutil.rmtree(paths.merged / DIR_VAR / DIR_LIB / DIR_DPKG, ignore_errors=True)
 
             for target in reversed(mounts):
-                subprocess.run(["umount", "-l", str(target)], check=False)
+                subprocess.run([CMD_UMOUNT, ARG_LAZY, str(target)], check=False)
 
     def _upgrade_system_libs(self, merged_path: Path, pkg_name: str, deb_paths: List[Path]):
-        tmp_dir_in_root = merged_path / "tmp"
+        """
+        @brief Installs system-level Debian packages inside a chroot environment.
+        @param merged_path Path to the merged rootfs.
+        @param pkg_name Name of the bundle.
+        @param deb_paths List of Debian files.
+        @throw RuntimeError if dpkg execution fails.
+        """
+        tmp_dir_in_root = merged_path / TMP_DIR_REL
         tmp_dir_in_root.mkdir(parents=True, exist_ok=True)
         
         chroot_deb_paths = []
         for deb in deb_paths:
             target_deb = tmp_dir_in_root / deb.name
             shutil.copy2(deb, target_deb)
-            chroot_deb_paths.append(f"/tmp/{deb.name}")
+            chroot_deb_paths.append(f"/{TMP_DIR_REL}/{deb.name}")
         
-        cmd = ["chroot", str(merged_path), DPKG_CMD, "--auto-deconfigure", "-i"] + chroot_deb_paths
+        cmd = [CMD_CHROOT, str(merged_path), DPKG_CMD, ARG_AUTO_DECONFIGURE, ARG_INSTALL] + chroot_deb_paths
         res = subprocess.run(cmd, capture_output=True, text=True)
         
         if res.returncode != 0:
@@ -504,25 +599,39 @@ class Store:
                 deb_file.unlink()
 
     def _run_sandbox_install(self, pkg_name: str, paths: TransactionPaths, recipe: Dict[str, Any], sys_pkg_lowers: List[Path], dpkg_records: Dict[str, Any]):
-        """Installs a regular package into the overlay stack."""
+        """
+        @brief Executes the installation of a regular package within the sandboxed overlay stack.
+        @param pkg_name Package name.
+        @param paths Transaction paths.
+        @param recipe Package recipe.
+        """
         if recipe:
             self._plant_symlink_forest(paths.forest, recipe)
             
         with self._mount_stack(paths, sys_pkg_lowers, dpkg_records):
-            subprocess.run(["cp", "-a", f"{paths.stage}/.", str(paths.merged)], check=True)
-            subprocess.run(["chroot", str(paths.merged), LDCONFIG_PATH], check=True)
+            subprocess.run([CMD_CP, ARG_ARCHIVE, f"{paths.stage}/.", str(paths.merged)], check=True)
+            subprocess.run([CMD_CHROOT, str(paths.merged), LDCONFIG_PATH], check=True)
 
             postinst_rel = DPKG_POSTINST_PATH
             if (paths.merged / postinst_rel).exists():
                 self.logger.info(f"Running postinst for {pkg_name}.")
                 self.logger.debug((paths.merged / postinst_rel).read_text())
                 
-                subprocess.run(["chroot", str(paths.merged), f"/{postinst_rel}", "configure", ""], 
+                subprocess.run([CMD_CHROOT, str(paths.merged), f"/{postinst_rel}", ARG_CONFIGURE, ""], 
                                check=True,
                                env=env_injection_list(pkg_name)
                 )
 
     def _commit_package(self, paths: TransactionPaths, store_path: Path, pkg_map_key: str, wrapper_path : Path = None) -> bool:
+        """
+        @brief Atomically moves installed files from the sandbox upper layer to the store.
+        @param paths Transaction paths.
+        @param store_path Destination store path.
+        @param pkg_map_key Map entry key.
+        @param wrapper_path Optional wrapper persistence path.
+        @throw RuntimeError if the upper directory is empty.
+        @return True if committed, False otherwise.
+        """
         upper_path : Path = paths.upper
         forest_path : Path = paths.forest
 
@@ -534,7 +643,7 @@ class Store:
         if not self._save_package_to_map(store_path, pkg_map_key):
             return False
 
-        tmp_store_target = STORE_TMP_ROOT / f"{store_path.name}.tmp"
+        tmp_store_target = STORE_TMP_ROOT / f"{store_path.name}{EXT_TMP}"
         try:
             self._umount_tree(paths.merged)
 
@@ -558,8 +667,9 @@ class Store:
     @staticmethod
     def copytree_filtered(src: Path, dst: Path):
         """
-        Copies a directory tree while filtering out OverlayFS whiteout 
-        artifacts and preserving symlinks.
+        @brief Copies a directory while filtering out OverlayFS whiteouts and preserving symlinks.
+        @param src Source directory.
+        @param dst Destination directory.
         """
         src, dst = Path(src), Path(dst)
 
@@ -568,7 +678,7 @@ class Store:
             target_dir = dst / rel_path
             target_dir.mkdir(parents=True, exist_ok=True)
 
-            dirs[:] = [d for d in dirs if not (d.startswith(OVLFS_JUNK_STR) or d == f"{OVLFS_JUNK_STR}{OVLFS_JUNK_STR}.opq")]
+            dirs[:] = [d for d in dirs if not (d.startswith(OVLFS_JUNK_STR) or d == f"{OVLFS_JUNK_STR}{OVLFS_JUNK_STR}{EXT_OPQ}")]
 
             for name in files:
                 if name.startswith(OVLFS_JUNK_STR):
@@ -586,29 +696,46 @@ class Store:
 
     @staticmethod
     def _extract_zip_to_stage(zip_path: Path, stage_path: Path) -> List[Path]:
+        """
+        @brief Unpacks a zip file and identifies any contained Debian packages.
+        @param zip_path Path to the zip.
+        @param stage_path Extraction target.
+        @throw FileNotFoundError if no debs are found.
+        @return List of deb file paths.
+        """
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(stage_path)
-        deb_files = list(stage_path.glob("*.deb"))
+        deb_files = list(stage_path.glob(GLOB_DEB))
         if not deb_files: raise FileNotFoundError(f"No .deb found in {zip_path}")
         if zip_path.exists(): zip_path.unlink()
         return deb_files
 
     @staticmethod
     def _extract_deb_to_stage(deb_file: Path, stage_path: Path):
-        subprocess.run(["dpkg-deb", "-x", str(deb_file), str(stage_path)], check=True)
+        """
+        @brief Extracts Debian data and control files to the staging area.
+        @param deb_file The .deb file to extract.
+        @param stage_path Extraction target directory.
+        """
+        subprocess.run([DPKG_DEB_CMD, ARG_EXTRACT, str(deb_file), str(stage_path)], check=True)
         control_dir = stage_path / DPKG_INFO_PATH
         control_dir.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["dpkg-deb", "-e", str(deb_file), str(control_dir)], check=True)
+        subprocess.run([DPKG_DEB_CMD, ARG_CONTROL_EXTRACT, str(deb_file), str(control_dir)], check=True)
         deb_file.unlink()
 
     def _get_transaction_paths(self, tx_id: str) -> TransactionPaths:
+        """
+        @brief Generates and creates filesystem paths for a unique transaction.
+        @param tx_id Unique transaction identifier.
+        @return A TransactionPaths object.
+        """
         tx = TransactionPaths(
-            stage=self.transient / f"stage_{tx_id}",
-            forest=self.transient / f"forest_{tx_id}",
-            upper=self.transient / f"upper_{tx_id}",
-            work=self.transient / f"work_{tx_id}",
-            merged=self.transient / f"merged_{tx_id}",
-            download=self.transient / "downloads"
+            stage=self.transient / f"{PREFIX_STAGE}{tx_id}",
+            forest=self.transient / f"{PREFIX_FOREST}{tx_id}",
+            upper=self.transient / f"{PREFIX_UPPER}{tx_id}",
+            work=self.transient / f"{PREFIX_WORK}{tx_id}",
+            merged=self.transient / f"{PREFIX_MERGED}{tx_id}",
+            download=self.transient / DIR_DOWNLOADS
         )
         for path in [tx.stage, tx.forest, tx.upper, tx.work, tx.merged, tx.download]:
             path.mkdir(parents=True, exist_ok=True)
@@ -617,6 +744,11 @@ class Store:
     
     @staticmethod
     def get_recipe(stage_path: Path) -> Dict[str, Any]:
+        """
+        @brief Loads the package recipe JSON from a staged directory.
+        @param stage_path Path to the staged package.
+        @return Dictionary representing the recipe metadata.
+        """
         recipe_path = stage_path / RECIPE
         if not recipe_path.exists(): return {}
         with open(recipe_path, "r") as f:
@@ -624,7 +756,10 @@ class Store:
         
     @contextmanager
     def _transaction_lock(self):
-        lock_path = self.transient / ".update.lock"
+        """
+        @brief Context manager for acquiring an exclusive filesystem lock for store operations.
+        """
+        lock_path = self.transient / LOCK_FILE_NAME
         self.transient.mkdir(parents=True, exist_ok=True)
         
         with open(lock_path, 'w') as lock_file:
@@ -636,6 +771,9 @@ class Store:
                 fcntl.flock(lock_file, fcntl.LOCK_UN)
 
     def _cleanup_transaction(self):
+        """
+        @brief Removes temporary directories and unmounts associated with active transactions.
+        """
         for tx in self._active_tx_paths:
             for directory in [tx.stage, tx.forest, tx.upper, tx.work, tx.merged]:
                 if directory.exists():
