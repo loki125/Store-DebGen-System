@@ -16,11 +16,20 @@ from .utils import GenManifest, Layer, HealthInfo, GenPath
 
 class Generation:
     def __init__(self, store: Store):
+        """!
+        @brief Initializes the Generation instance with a reference to the store and a logger.
+
+        @param store The Store instance used to access package and recipe resources.
+        """
         self.store = store
         self.logger = logging.getLogger(self.__class__.__name__)
 
     def initialize_system(self) -> Optional[GenManifest]:
-        """Creates the first generation if it doesn't exist."""
+        """!
+        @brief Creates and returns the initial system generation manifest if it does not already exist.
+
+        @return The initial GenManifest if created, or None if the current symlink already exists.
+        """
         if not GEN_DIR.exists():
             self.logger.info(f"Initializing DDLS directory at {GEN_DIR}")
             GEN_DIR.mkdir(parents=True, exist_ok=True)
@@ -37,7 +46,11 @@ class Generation:
         )
 
     def get_current_manifest(self) -> GenManifest:
-        """Always points to the symlink."""
+        """!
+        @brief Retrieves the active generation manifest by reading the current system symlink.
+
+        @return The parsed GenManifest representing the current active state.
+        """
         if not CURRENT_LINK.exists():
             return self.initialize_system()
             
@@ -46,6 +59,11 @@ class Generation:
             return GenManifest.from_dict(data)
 
     def _switch_current_manifest(self, new_manifest: GenManifest):
+        """!
+        @brief Atomically updates the current manifest symlink to point to the newly written manifest file.
+
+        @param new_manifest The new GenManifest to activate.
+        """
         target = Path(GenPath.manifest(new_manifest.timestamp_id))
 
         with open(target, "w") as f:
@@ -57,6 +75,13 @@ class Generation:
         os.symlink(target, CURRENT_LINK)
 
     def create_manifest(self, to_add: List[Path] = None, to_rm: List[Path] = None) -> Tuple[GenManifest, GenManifest]:
+        """!
+        @brief Generates a new manifest by applying additions and removals of package layers to the current manifest.
+
+        @param to_add A list of file paths to the package layers to be added.
+        @param to_rm A list of file paths to the package layers to be removed.
+        @return A tuple containing the newly created GenManifest and the current GenManifest.
+        """
         current: GenManifest = self.get_current_manifest()
         new_gen: GenManifest = copy.deepcopy(current)
         
@@ -128,6 +153,13 @@ class Generation:
         return new_gen, current
         
     def _calculate_diff(self, old_manifest: GenManifest, new_manifest: GenManifest) -> Tuple[Set[Layer], Set[Layer]]:
+            """!
+            @brief Calculates the added and removed layers between an old and a new manifest.
+
+            @param old_manifest The starting GenManifest reference.
+            @param new_manifest The target GenManifest reference.
+            @return A tuple containing a set of added layers and a set of removed layers.
+            """
             self.logger.info("Calculating differences...")
             
             old_map = {l.h: l for l in old_manifest.active_layers}
@@ -142,6 +174,14 @@ class Generation:
             return to_add, to_remove
 
     def execute(self, new_manifest: GenManifest, current_manifest: GenManifest, overwrite_flag: bool = False) -> bool:
+        """!
+        @brief Executes the state transition from the current manifest to the new manifest.
+
+        @param new_manifest The target GenManifest to transition to.
+        @param current_manifest The current active GenManifest.
+        @param overwrite_flag Boolean flag indicating whether to reset and clean up the old generation path.
+        @return True if the transition completes successfully, False otherwise.
+        """
         self.logger.info(f"=== STARTING TRANSITION: Gen {current_manifest.timestamp_id} -> Gen {new_manifest.timestamp_id} ===")
         new_path = None
         
@@ -176,6 +216,12 @@ class Generation:
             return False
     
     def _create_new_gen(self, new_manifest: GenManifest) -> str:
+        """!
+        @brief Builds the filesystem layout and symlinks library and binary wrappers for a new generation.
+
+        @param new_manifest The GenManifest specifying the active layers to set up.
+        @return The base path string where the new generation forest is located.
+        """
         manifest_id = new_manifest.timestamp_id
         gen_bin_dir = Path(GenPath.root_bin(manifest_id))
         gen_lib_dir = Path(GenPath.root_lib(manifest_id))
@@ -203,6 +249,12 @@ class Generation:
         return str(base_path_str)
 
     def _link_wrappers_to_bin(self, hash_str: str, target_dir: Path):
+        """!
+        @brief Creates executable symlinks for all wrappers associated with a package hash inside the target binary directory.
+
+        @param hash_str The hash string identifying the package.
+        @param target_dir The directory path where the binary wrappers will be linked.
+        """
         wrapper_root = WRAPPER_DIR / hash_str
         target_dir.mkdir(parents=True, exist_ok=True)
         
@@ -225,6 +277,13 @@ class Generation:
                     self.logger.error(f"Failed to create wrapper symlink for {entry.name}: {e}")
 
     def _handle_lib_symlinking(self, pkg_store_path: Path, gen_lib_dir: Path, isolated_lib: str):
+        """!
+        @brief Symlinks libraries from a package's library directory to the generation's shared library directory.
+
+        @param pkg_store_path The base path of the package in the store.
+        @param gen_lib_dir The target generation directory for shared libraries.
+        @param isolated_lib The subpath relative to the package store indicating where libraries are located.
+        """
         pkg_lib_source = pkg_store_path / isolated_lib
         
         if pkg_lib_source.exists() and pkg_lib_source.is_dir():
@@ -240,6 +299,11 @@ class Generation:
                 os.symlink(lib_file, dst_path)
 
     def _atomic_switch(self, manifest: GenManifest):
+        """!
+        @brief Swaps the active generation symlink atomically to point to the new generation root directory.
+
+        @param manifest The target GenManifest being switched to.
+        """
         gen_path = GenPath.base(manifest.timestamp_id)
         gen_root_path = GenPath.root(manifest.timestamp_id)
         self.logger.info(f"Flipping the global symlink to {gen_path}...")
@@ -265,6 +329,11 @@ class Generation:
         self.logger.info(f"Successfully switched active profile to {gen_path}")
     
     def _shutdown_processes(self, pkgs_to_remove: Set[Layer]):
+        """!
+        @brief Terminates any running processes associated with the package layers slated for removal.
+
+        @param pkgs_to_remove A set of package Layer objects to shut down.
+        """
         if not pkgs_to_remove:
             return
 
@@ -287,6 +356,12 @@ class Generation:
                 subprocess.run(["pkill", "-KILL", "-f", pkg_store_path], check=False)
 
     def _activate_processes(self, pkgs_to_add: Set[Layer], gen_bin_dir: Path):
+        """!
+        @brief Scans newly added package layers for initialization scripts and launches their background services.
+
+        @param pkgs_to_add A set of newly added package Layer objects to search for services.
+        @param gen_bin_dir The path containing the executable wrappers for the services.
+        """
         if not pkgs_to_add:
             return
             

@@ -8,15 +8,26 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from config import STORE_NODE
-from utils import APIEndpoints, APIParams
+from .utils import APIEndpoints, APIParams
 
 class Fetcher:
     def __init__(self, headers: Optional[Dict[str, str]] = None):
+        """!
+        @brief Initializes the Fetcher instance with optional HTTP headers and a logger.
+
+        @param headers Optional dictionary of HTTP headers to include in requests.
+        """
         self.headers = headers or {}
         self.logger = logging.getLogger(self.__class__.__name__)
 
     def _make_request(self, endpoint: str, params: Optional[Dict[str, str]] = None):
-        """Core request handler that builds the URL and returns an open HTTP response."""
+        """!
+        @brief Builds the URL and executes an HTTP request, returning the open response.
+
+        @param endpoint The target API endpoint path.
+        @param params Optional dictionary of query parameters.
+        @return The open HTTP response object.
+        """
         url = urllib.parse.urljoin(STORE_NODE, endpoint)
         
         if params:
@@ -27,7 +38,13 @@ class Fetcher:
         return urllib.request.urlopen(req, timeout=10)
 
     def _get_json(self, endpoint: str, params: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-        """Wrapper for _make_request that automatically parses and returns JSON."""
+        """!
+        @brief Executes an HTTP request and parses the response body as JSON.
+
+        @param endpoint The target API endpoint path.
+        @param params Optional dictionary of query parameters.
+        @return A dictionary containing the parsed JSON response data.
+        """
         try:
             with self._make_request(endpoint, params) as response:
                 response_text = response.read().decode('utf-8')
@@ -41,6 +58,12 @@ class Fetcher:
             raise RuntimeError("Failed to connect to the store node.") from err
         
     def get_recipe_pkg(self, store_path: Path | str) -> Dict[str, Any]:
+        """!
+        @brief Retrieves the recipe package details for a given store path.
+
+        @param store_path The path or string identifier of the store item.
+        @return A dictionary containing the package recipe data.
+        """
         return self._get_json(
             APIEndpoints.RECIPE_PKG,
             {APIParams.STORE_PATH: str(store_path)}
@@ -48,6 +71,12 @@ class Fetcher:
 
 
     def get_packages_by_name(self, package_name: str) -> Dict[str, Any]:
+        """!
+        @brief Retrieves packages matching a specific name from the store.
+
+        @param package_name The name of the package to search for.
+        @return A dictionary containing the matching package details.
+        """
         return self._get_json(
             APIEndpoints.PKGS_BY_NAME,
             {APIParams.PACKAGE: package_name}
@@ -59,6 +88,13 @@ class Fetcher:
         package_name: str,
         version: str
     ) -> Dict[str, Any]:
+        """!
+        @brief Retrieves packages matching a specific name and version.
+
+        @param package_name The name of the package.
+        @param version The version string of the package.
+        @return A dictionary containing the matching package details.
+        """
         return self._get_json(
             APIEndpoints.PKGS_BY_NAME_VERSION,
             {
@@ -69,6 +105,12 @@ class Fetcher:
 
 
     def get_package_by_hash(self, sha256_hash: str) -> Dict[str, Any]:
+        """!
+        @brief Retrieves a package matching the specified SHA-256 hash.
+
+        @param sha256_hash The SHA-256 hash string of the package.
+        @return A dictionary containing the package details.
+        """
         return self._get_json(
             APIEndpoints.PKG_BY_HASH,
             {APIParams.SHA256: sha256_hash}
@@ -80,7 +122,13 @@ class Fetcher:
         save_dir: Path,
         relative_store_path: Path | str
     ) -> Optional[Path]:
+        """!
+        @brief Downloads a file from the store node and saves it to the specified directory.
 
+        @param save_dir The directory path where the downloaded file will be saved.
+        @param relative_store_path The relative path of the file on the store node.
+        @return The path to the downloaded file, or None if the download fails.
+        """
         try:
             if not save_dir.exists() or not save_dir.is_dir():
                 raise FileNotFoundError(
@@ -122,7 +170,12 @@ class Fetcher:
 
     @staticmethod 
     def get_filename(cd_header: str) -> Optional[str]:
-        """Safely extracts the filename from a Content-Disposition header."""
+        """!
+        @brief Safely extracts and cleans the filename from a Content-Disposition header.
+
+        @param cd_header The raw Content-Disposition header string.
+        @return The sanitized filename string, or None if extraction fails.
+        """
         if not cd_header:
             return None
             

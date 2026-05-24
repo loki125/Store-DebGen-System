@@ -8,6 +8,12 @@ from config import *
 
 class Bootstrapper:
     def __init__(self, target_path: Path = BASE_ROOTFS, rootfs_tarball: Path = BASE_ROOTFS_TARBALL):
+        """!
+        @brief Initializes a new instance with the specified root filesystem paths and setup configurations.
+
+        @param target_path The target path where the root filesystem will be located.
+        @param rootfs_tarball The path to the root filesystem tarball archive.
+        """
         self.target_path = target_path
         self.rootfs_tarball = rootfs_tarball
         self.exit_script = "#!/bin/sh\nexit {exit_code}\n"
@@ -15,7 +21,9 @@ class Bootstrapper:
         self.logger = logging.getLogger(self.__class__.__name__)
 
     def _stitch_tarball(self) -> None:
-        """Finds split parts and stitches them back into a single tarball."""
+        """!
+        @brief Reconstructs the target tarball by locating and concatenating its split parts in order.
+        """
         parts = sorted(self.rootfs_tarball.parent.glob(f"{self.rootfs_tarball.name}.part_*"))
         
         if not parts:
@@ -32,6 +40,9 @@ class Bootstrapper:
         self.logger.info("Tarball successfully reconstructed.")
 
     def deploy(self) -> None:
+        """!
+        @brief Deploys the root filesystem by extracting the tarball to the target path and preparing the environment.
+        """
         if not self.rootfs_tarball.exists():
             self._stitch_tarball()
 
@@ -47,7 +58,9 @@ class Bootstrapper:
         self.patch_environment()
 
     def patch_environment(self) -> None:
-        """Apply runtime shims and ensure /dev/null exists."""
+        """!
+        @brife Apply runtime shims and ensure /dev/null exists.
+        """
         
         null_device = self.target_path / "dev/null"
         if not null_device.exists():
@@ -70,9 +83,11 @@ class Bootstrapper:
         self.logger.info("Environment patch applied successfully.")
 
     def is_system_pkg(self, pkg_name: str) -> bool:
-        """
-        Gets a package name and asks if ANY version of it exists 
-        and is currently installed on the target system (chroot).
+        """!
+        @brief Checks if a specified package is currently installed on the target system within the chroot environment.
+
+        @param pkg_name The name of the package to check.
+        @return True if the package is installed, False otherwise.
         """
         cmd = ["chroot", str(self.target_path), DPKG_QUERY_CMD, "-W", "--showformat=${Status}", pkg_name]
         res = subprocess.run(cmd, capture_output=True, text=True)

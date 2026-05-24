@@ -24,7 +24,11 @@ store = Store(Fetcher())
 # CLI PARSER SETUP
 
 def build_parser() -> argparse.ArgumentParser:
-    """Constructs the argparse parser for the ddls tool."""
+    """!
+    @brief Constructs the argparse parser for the DDLS command-line interface.
+
+    @return The configured ArgumentParser instance.
+    """
     parser = argparse.ArgumentParser(
         description="DDLS (DaeDaLuS) - The Containerized Package Manager",
         prog="ddls",
@@ -101,7 +105,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 # ENVIRONMENT & UTILS
 def setup_environment(args: argparse.Namespace) -> None:
-    """Prepares directories, mounts, and configures logging dynamically."""
+    """!
+    @brief Prepares required directories, filesystem mounts, and configures dynamic logging based on arguments.
+
+    @param args The parsed command-line arguments containing configuration flags.
+    """
     
     # Configure logging based on flag
     log_level = logging.DEBUG if args.debug else logging.INFO
@@ -123,7 +131,12 @@ def setup_environment(args: argparse.Namespace) -> None:
 
 
 def handle_insert_logic(change_args: List[str]) -> Tuple[List[Path], List[Path]]:
-    """Processes raw insert strings (+pkg / -pkg) and resolves them to store paths."""
+    """!
+    @brief Processes raw insert strings to resolve and categorize store paths for addition or removal.
+
+    @param change_args A list of string representations of packages to add or remove (e.g., +pkg, -pkg).
+    @return A tuple containing a list of paths to add and a list of paths to remove.
+    """
     to_add = []
     to_remove = []
     
@@ -152,7 +165,12 @@ def handle_insert_logic(change_args: List[str]) -> Tuple[List[Path], List[Path]]
 
 # COMMAND HANDLERS
 def cmd_start(args: argparse.Namespace) -> int:
-    """Handles the 'start' command."""
+    """!
+    @brief Handles the 'start' command by creating system symlinks and configuring environment variables.
+
+    @param args The parsed command-line arguments.
+    @return The integer exit code of the command execution.
+    """
     PKG_MANAGER_LINK = "/usr/bin/ddls"
     current_script = os.path.abspath(__file__)
     
@@ -195,7 +213,12 @@ def cmd_start(args: argparse.Namespace) -> int:
     return 0
 
 def cmd_info(args: argparse.Namespace) -> int:
-    """Handles the 'info' command."""
+    """!
+    @brief Handles the 'info' command by fetching and displaying remote package information.
+
+    @param args The parsed command-line arguments containing the target package name.
+    @return The integer exit code of the command execution.
+    """
     try:
         resp = store.fetcher.get_packages_by_name(args.package)
         print(json.dumps(resp, indent=4, sort_keys=True))
@@ -205,13 +228,23 @@ def cmd_info(args: argparse.Namespace) -> int:
         return 1
 
 def cmd_update(args: argparse.Namespace) -> int:
-    """Handles the 'update' command."""
+    """!
+    @brief Handles the 'update' command by querying and installing a specific package version into the local store.
+
+    @param args The parsed command-line arguments containing the package name and version.
+    @return The integer exit code of the command execution.
+    """
     query: Dict = store.fetcher.get_packages_by_name_version(args.package, args.version)
     success = store.update(query)
     return 0 if success else 1
 
 def cmd_system(args: argparse.Namespace) -> int:
-    """Handles the 'system' command."""
+    """!
+    @brief Handles the 'system' command to update base system packages in the local store.
+
+    @param args The parsed command-line arguments containing the system package store path.
+    @return The integer exit code of the command execution.
+    """
     if os.path.exists(STORE_ROOT / args.store_path):
         logging.info(f"System package {args.store_path} already exists in store.")
         return 0
@@ -224,7 +257,12 @@ def cmd_system(args: argparse.Namespace) -> int:
         return 1
 
 def cmd_insert(args: argparse.Namespace) -> int:
-    """Handles the 'insert' command."""
+    """!
+    @brief Handles the 'insert' command to apply environment modifications by creating and executing a new generation manifest.
+
+    @param args The parsed command-line arguments containing the list of changes.
+    @return The integer exit code of the command execution.
+    """
     adds, rms = handle_insert_logic(args.changes)
     
     if not adds and not rms:
@@ -238,7 +276,12 @@ def cmd_insert(args: argparse.Namespace) -> int:
     return 0 if success else 1
 
 def cmd_install(args: argparse.Namespace) -> int:
-    """Handles the 'install' command."""
+    """!
+    @brief Handles the 'install' command by fetching a package and immediately inserting it into the current generation.
+
+    @param args The parsed command-line arguments containing the package name and version.
+    @return The integer exit code of the command execution.
+    """
     while True:
         try:
             update_rc = cmd_update(args)
@@ -260,8 +303,12 @@ def cmd_install(args: argparse.Namespace) -> int:
     return cmd_insert(insert_args)
 
 def cmd_reset(args: argparse.Namespace) -> int:
-    """Handles the 'reset' command."""
-    
+    """!
+    @brief Handles the 'reset' command to permanently delete all local packages, generations, and environment configurations.
+
+    @param args The parsed command-line arguments.
+    @return The integer exit code of the command execution.
+    """
     while True:
         choice = input("WARNING: Reset will permanently delete all packages and generations. Proceed? [y/N] ").strip().lower()
         if choice in ('n', ''):
@@ -298,7 +345,12 @@ def cmd_reset(args: argparse.Namespace) -> int:
 
 
 def main(argv=None) -> int:
-    """Main application entry point."""
+    """!
+    @brief Serves as the main application entry point for parsing arguments and routing commands.
+
+    @param argv An optional list of command-line arguments to parse.
+    @return The integer exit code representing the success or failure of the application run.
+    """
     exit_code = 0
     args = None
 

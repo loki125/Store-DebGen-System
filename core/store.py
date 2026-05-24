@@ -17,6 +17,15 @@ from config import *
 
 class Store:
     def __init__(self, fetcher, root=STORE_ROOT, transient=TRANS_ROOT, base_rootfs=BASE_ROOTFS, pkg_map=PKG_MAP_PATH):
+        """!
+        @brief Initializes the Store instance with paths and dependencies required for package management.
+
+        @param fetcher The object responsible for downloading packages and recipes.
+        @param root The root path of the store directory.
+        @param transient The path used for transient transaction files.
+        @param base_rootfs The base root filesystem path.
+        @param pkg_map The file path to the binary package map file.
+        """
         self.root = Path(root).resolve()
         self.transient = Path(transient).resolve()
         self.base_rootfs = Path(base_rootfs).resolve()
@@ -38,13 +47,22 @@ class Store:
         self._created_wrappers: set = set()
 
     def _init_map(self):
+        """!
+        @brief Initializes the binary package map file with empty slots if it does not already exist.
+        """
         if not self.pkg_map.exists():
             with open(self.pkg_map, "wb") as f:
                 f.write(b'\x00' * (SLOT_COUNT * SLOT_SIZE))
             self.logger.info(f"Package map created at: {self.pkg_map}")
 
     @staticmethod
-    def _hash_djb2(s: str) -> int:
+    def _package_index(s: str) -> int:
+        """!
+        @brief Computes the hash index for a given package string using the djb2 algorithm.
+
+        @param s The string identifier to hash.
+        @return The calculated integer slot index.
+        """
         h = 5381
         for char in s:
             h = ((h << 5) + h) + ord(char)
@@ -53,8 +71,15 @@ class Store:
 
 
     def _save_package_to_map(self, hash_path: Path, pkg_ver: str) -> bool:
+        """!
+        @brief Saves a package path into the binary map file using linear probing.
+
+        @param hash_path The storage path of the package to record.
+        @param pkg_ver The unique package version identifier used as the key.
+        @return True if successfully saved, False otherwise.
+        """
         if not self.pkg_map.exists(): return False
-        index = self._hash_djb2(pkg_ver)
+        index = self._package_index(pkg_ver)
         key_bytes = pkg_ver.encode('utf-8')[:KEY_SIZE].ljust(KEY_SIZE, b'\x00')
         val_bytes = str(hash_path).encode('utf-8')[:VALUE_SIZE]
 
@@ -84,8 +109,14 @@ class Store:
         return False
 
     def get_package(self, pkg_ver: str) -> Optional[str]:
+        """!
+        @brief Looks up the store path for a specific package version from the binary map.
+
+        @param pkg_ver The package version identifier to search for.
+        @return The registered package path string, or None if not found.
+        """
         if not self.pkg_map.exists(): return None
-        index = self._hash_djb2(pkg_ver)
+        index = self._package_index(pkg_ver)
         key_bytes = pkg_ver.encode('utf-8')[:KEY_SIZE].ljust(KEY_SIZE, b'\x00')
         with open(self.pkg_map, "rb") as f:
             attempt = 0
@@ -103,9 +134,16 @@ class Store:
         return None
     
     def _erase_package(self, pkg_path: Path, pkg_ver: str) -> bool:
+        """!
+        @brief Removes a package directory and marks its map slot as deleted.
+
+        @param pkg_path The package directory path to remove.
+        @param pkg_ver The package version identifier used to locate the map entry.
+        @return True if the package map entry was erased, False otherwise.
+        """
         if pkg_path.exists(): shutil.rmtree(pkg_path)
         if not self.pkg_map.exists(): return False
-        index = self._hash_djb2(pkg_ver)
+        index = self._package_index(pkg_ver)
         key_bytes = pkg_ver.encode('utf-8')[:KEY_SIZE].ljust(KEY_SIZE, b'\x00')
         with open(self.pkg_map, "rb+") as f:
             attempt = 0
@@ -124,7 +162,11 @@ class Store:
         return False
 
     def _umount_tree(self, path: Path):
-        """Force unmount all mounts under a given path."""
+        """!
+        @brief Force unmount all mounts under a given path.
+
+        @param path The root path to search for and unmount filesystems.
+        """
         try:
             subprocess.run(
                 ["umount", "-R", str(path)],
@@ -139,7 +181,12 @@ class Store:
             )
 
     def update_sys(self, sys_pkg_path: Path) -> bool:
-        """Dedicated flow to install System Bundles (Base Layers) into the store."""
+        """!
+        @brief Dedicated flow to install System Bundles (Base Layers) into the store.
+
+        @param sys_pkg_path The path identifying the system package to update.
+        @return True if the installation succeeds, False otherwise.
+        """
         store_path = self.root / sys_pkg_path
 
         if store_path.exists():
@@ -172,7 +219,12 @@ class Store:
                 self._cleanup_transaction()
 
     def update(self, pkg: Dict[str, Any]) -> bool:
-        """Regular package update. Expects system dependencies to already exist in store."""
+        """!
+        @brief Regular package update expecting system dependencies to already exist in store.
+
+        @param pkg The package metadata dictionary containing installation details.
+        @return True if the package is successfully installed, False otherwise.
+        """
         pkg_name = pkg["Package"]
         store_path = self.root / Path(pkg["Store_Path"])
 
@@ -220,6 +272,13 @@ class Store:
                 self._cleanup_transaction()
     
     def _prepare_ingredients(self, pkg: Dict[str, Any], main_paths: TransactionPaths) -> Tuple[List[Tuple[Path, str, TransactionPaths, str]], List[Path], Dict[Path, Dict[str, Any]], List[Dict[str, Any]]]:
+        """!
+        @brief Prepares the transaction context by downloading dependencies and establishing required package mounts.
+
+        @param pkg The package dictionary containing dependency and store path details.
+        @param main_paths The primary transaction paths generated for this installation.
+        @return A tuple holding the mounting queue, system lowers, processed recipes, and dpkg state records.
+        """
         main_rel_path = Path(pkg["Store_Path"])
         
         sys_pkg_lowers: List[Path] = []
@@ -259,6 +318,13 @@ class Store:
         return mounting_list, sys_pkg_lowers, recipes_to_process, dpkg_records
 
     def _fetch_package_archive(self, rel_path: Path, t_paths: TransactionPaths) -> List[Path]:
+        """!
+        @brief Downloads and extracts a specific package archive into the active transaction's staging space.
+
+        @param rel_path The relative store path to download the archive for.
+        @param t_paths The current package's transaction path configuration.
+        @return A list of extracted debian package paths.
+        """
         t_paths.download.mkdir(parents=True, exist_ok=True)
         t_paths.stage.mkdir(parents=True, exist_ok=True)
         t_paths.forest.mkdir(parents=True, exist_ok=True)
@@ -272,6 +338,17 @@ class Store:
     def _integrate_package(self, rel_path: Path, t_paths: TransactionPaths, deb_paths: List[Path], 
                            recipe: Dict[str, Any], sys_pkg_lowers: List[Path], 
                            recipes_to_process: Dict[Path, Dict[str, Any]], mounting_list: List) -> None:
+        """!
+        @brief Registers a package recipe, builds its wrapper configurations, and appends it to the mounting plan.
+
+        @param rel_path The package's intended path inside the store.
+        @param t_paths The transaction layout configuration object.
+        @param deb_paths The list of extracted debian archives to be unpacked.
+        @param recipe The parsed JSON recipe containing execution semantics.
+        @param sys_pkg_lowers The aggregated list of system lower paths required.
+        @param recipes_to_process The dictionary capturing recipes mapping back to their transaction forest.
+        @param mounting_list The deployment queue tracking the packages waiting to be built.
+        """
         pkg_name = recipe["package_name"]
         version = recipe["version"]
         map_key = KEY_STR.format(name=pkg_name, version=version)
@@ -285,6 +362,12 @@ class Store:
         self._create_wrapper(rel_path, recipe.get("provider_map", []), sys_pkg_lowers)
 
     def _resolve_system_mounts(self, recipe: Dict[str, Any], sys_pkg_lowers: List[Path]) -> None:
+        """!
+        @brief Validates required system mounts from a recipe and stages them as lower layers if present.
+
+        @param recipe The parsed package recipe JSON dictionary.
+        @param sys_pkg_lowers The list to which valid system package paths are appended.
+        """
         sys_reqs = recipe.get("mount_instructions", {}).get("system_mounts", [])
         if isinstance(sys_reqs, str): 
             sys_reqs = [sys_reqs]
@@ -297,6 +380,13 @@ class Store:
                 sys_pkg_lowers.append(sys_path)
 
     def _create_wrapper(self, hash_path: Path, provide_list: List[str], sys_pkg_lowers: List[Path]):
+        """!
+        @brief Instantiates executable bash wrappers embedding OverlayFS invocation arguments for package execution.
+
+        @param hash_path The distinct package path string targeting this wrapper configuration.
+        @param provide_list A list of executable paths provided by this package to generate wrappers for.
+        @param sys_pkg_lowers The system mount lower directories required in the final execution overlay.
+        """
         wrapper_path = WRAPPER_DIR / hash_path
         wrapper_path.mkdir(parents=True, exist_ok=True)
 
@@ -344,6 +434,12 @@ class Store:
             self._created_wrappers.add(str(wrapper_path))
 
     def _plant_symlink_forest(self, forest_root, recipe):
+        """!
+        @brief Resolves mapping requests from a recipe to populate the runtime symlink forest.
+
+        @param forest_root The directory base path pointing to the symlink structure.
+        @param recipe The dictionary indicating which specific files should be copied or symlinked.
+        """
         for jail_path, store_path in recipe.get("symlink_forest", {}).items():
             link_name = forest_root / jail_path.lstrip("/")
             target_in_store = self.root / store_path
@@ -379,6 +475,11 @@ class Store:
             self.logger.debug(f"[{link_type}] {jail_path} -> {target_in_store}")
 
     def reset_target(self, target_path: Path):
+        """!
+        @brief Unmounts dangling overlay filesystems internally and purges a designated directory path.
+
+        @param target_path The directory target to resolve and securely clean up.
+        """
         if not target_path.exists(): return
         resolved_target = target_path.resolve()
         mounts = []
@@ -400,14 +501,23 @@ class Store:
         
     @staticmethod
     def generate_lower_str(lowers: List[str]) -> str:
-        """
-        Safely joins a list of paths for an OverlayFS lowerdir argument, 
-        escaping any colons present in the actual directory names.
+        """!
+        @brief Safely joins a list of paths for an OverlayFS lowerdir argument, escaping any colons present in the actual directory names.
+
+        @param lowers A list of raw lowerdir layer paths.
+        @return An appropriately escaped and concatenated lowerdir configuration string.
         """
         return ":".join([str(path).replace(":", "\\:") for path in lowers])
 
     @contextmanager
     def _mount_stack(self, paths: TransactionPaths, sys_pkg_lowers: List[Path] = None, dpkg_records: List[Dict[str, Any]] = None):
+        """!
+        @brief Assembles a transient FUSE OverlayFS hierarchy alongside necessary virtual device binds to execute a controlled installation context.
+
+        @param paths The isolated sandbox overlay layout specifying all transaction spaces.
+        @param sys_pkg_lowers An optional list of required system mounts to layer into the lower directories.
+        @param dpkg_records An optional list of previously extracted status records to inject inside the jail.
+        """
         mounts = []
         try:
             lower_dirs = [str(paths.forest)]
@@ -485,6 +595,13 @@ class Store:
                 subprocess.run(["umount", "-l", str(target)], check=False)
 
     def _upgrade_system_libs(self, merged_path: Path, pkg_name: str, deb_paths: List[Path]):
+        """!
+        @brief Upgrades dpkg system layers from extracted debian bundles inside the active sandbox layout.
+
+        @param merged_path The target overlay directory acting as the simulated root.
+        @param pkg_name The identifier name mapping to the actively targeted system bundle layer.
+        @param deb_paths Extracted lists referring back directly to uncompressed debian paths.
+        """
         tmp_dir_in_root = merged_path / "tmp"
         tmp_dir_in_root.mkdir(parents=True, exist_ok=True)
         
@@ -507,7 +624,15 @@ class Store:
                 deb_file.unlink()
 
     def _run_sandbox_install(self, pkg_name: str, paths: TransactionPaths, recipe: Dict[str, Any], sys_pkg_lowers: List[Path], dpkg_records: Dict[str, Any]):
-        """Installs a regular package into the overlay stack."""
+        """!
+        @brief Installs a regular package into the overlay stack and executes post-install scripts.
+
+        @param pkg_name The application package being deployed.
+        @param paths The isolated transaction mapping configurations.
+        @param recipe The dictionary object containing layout and script deployment configurations.
+        @param sys_pkg_lowers Necessary system dependencies structured beneath the active work layer.
+        @param dpkg_records Saved package manifest records necessary for internal consistency inside the jail.
+        """
         if recipe:
             self._plant_symlink_forest(paths.forest, recipe)
             
@@ -526,6 +651,15 @@ class Store:
                 )
 
     def _commit_package(self, paths: TransactionPaths, store_path: Path, pkg_map_key: str, wrapper_path : Path = None) -> bool:
+        """!
+        @brief Persists the completely built transaction into the store structure and finalizes the map update atomically.
+
+        @param paths The overlay configurations providing the upper modification space containing the changes.
+        @param store_path The destination storage node inside the master structure.
+        @param pkg_map_key The encoded version key acting as a registry pointer within the map index.
+        @param wrapper_path Path targeting execution wrappers which synchronize into the upper tree space.
+        @return True on successful atomic persistence, False otherwise.
+        """
         upper_path : Path = paths.upper
         forest_path : Path = paths.forest
 
@@ -560,9 +694,11 @@ class Store:
     
     @staticmethod
     def copytree_filtered(src: Path, dst: Path):
-        """
-        Copies a directory tree while filtering out OverlayFS whiteout 
-        artifacts and preserving symlinks.
+        """!
+        @brief Copies a directory tree while filtering out OverlayFS whiteout artifacts and preserving symlinks.
+
+        @param src The path originating the physical directories or links.
+        @param dst The intended path holding the final filtered output block.
         """
         src, dst = Path(src), Path(dst)
 
@@ -589,6 +725,13 @@ class Store:
 
     @staticmethod
     def _extract_zip_to_stage(zip_path: Path, stage_path: Path) -> List[Path]:
+        """!
+        @brief Unpacks compressed archive content directly into isolated sandbox staging paths.
+
+        @param zip_path The compressed payload path file to expand.
+        @param stage_path The transactional working folder receiving unpacked contents.
+        @return A collection locating the contained inner debian files.
+        """
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(stage_path)
         deb_files = list(stage_path.glob("*.deb"))
@@ -598,6 +741,12 @@ class Store:
 
     @staticmethod
     def _extract_deb_to_stage(deb_file: Path, stage_path: Path):
+        """!
+        @brief Relays low-level dpkg tooling commands extracting a debian package and its native control blocks.
+
+        @param deb_file The physical debian wrapper being resolved.
+        @param stage_path The path holding the extracted runtime mapping layout.
+        """
         subprocess.run(["dpkg-deb", "-x", str(deb_file), str(stage_path)], check=True)
         control_dir = stage_path / DPKG_INFO_PATH
         control_dir.mkdir(parents=True, exist_ok=True)
@@ -605,6 +754,12 @@ class Store:
         deb_file.unlink()
 
     def _get_transaction_paths(self, tx_id: str) -> TransactionPaths:
+        """!
+        @brief Allocates mapping spaces tracking internal transaction IDs and their associated overlay zones.
+
+        @param tx_id The transaction identifier grouping distinct overlay actions.
+        @return A TransactionPaths object detailing each generated target partition.
+        """
         tx = TransactionPaths(
             stage=self.transient / f"stage_{tx_id}",
             forest=self.transient / f"forest_{tx_id}",
@@ -620,6 +775,12 @@ class Store:
     
     @staticmethod
     def get_recipe(stage_path: Path) -> Dict[str, Any]:
+        """!
+        @brief Reads a recipe JSON directly from a deployed staging layer block.
+
+        @param stage_path The staging zone pointing back containing the target file block.
+        @return The decoded dictionary layout representation of the loaded file.
+        """
         recipe_path = stage_path / RECIPE
         if not recipe_path.exists(): return {}
         with open(recipe_path, "r") as f:
@@ -627,6 +788,9 @@ class Store:
         
     @contextmanager
     def _transaction_lock(self):
+        """!
+        @brief Provides a file-based lock handling critical concurrency operations safely block execution.
+        """
         lock_path = self.transient / ".update.lock"
         self.transient.mkdir(parents=True, exist_ok=True)
         
@@ -639,6 +803,9 @@ class Store:
                 fcntl.flock(lock_file, fcntl.LOCK_UN)
 
     def _cleanup_transaction(self):
+        """!
+        @brief Dismantles and permanently obliterates lingering staging folders ensuring clean storage states.
+        """
         for tx in self._active_tx_paths:
             for directory in [tx.stage, tx.forest, tx.upper, tx.work, tx.merged]:
                 if directory.exists():
